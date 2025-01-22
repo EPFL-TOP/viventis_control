@@ -1,0 +1,24 @@
+{
+    "creators": [
+	{
+	    "affiliation": "Ecole Polytechnique Fédérale de Lausanne",
+	    "name": "Helsens, Clement",
+	    "orcid": "0000-0002-9243-7554"
+	},
+
+	{
+	    "affiliation": "Ecole Polytechnique Fédérale de Lausanne",
+	    "name": "Nur Arslan, Feyza",
+	    "orcid": "0000-0001-5809-9566"
+	},
+	
+    ],
+
+    "keywords": [
+	    "microscopy",
+	    "viventis",
+    ],
+
+    "license": "MIT",
+    "upload_type": "software"
+}
