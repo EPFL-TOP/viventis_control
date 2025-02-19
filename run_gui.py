@@ -8,19 +8,37 @@ import tifffile
 import random
 import json
 import math
+import matplotlib.pyplot as plt
 
-base_outdir = r'D:\Data\Temp'
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.animation as animation
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-sys.path.insert(0, r"C:\Viventis\PyMCS\v2.0.0.0")
+base_outdir = ''
+
+if os.path.isdir(r"C:\Viventis\PyMCS"):
+
+    base_outdir = r'D:\Data\Temp'
+    sys.path.insert(0, r"C:\Viventis\PyMCS\v2.0.0.0")
+
+elif os.path.isdir('/Users/helsens/Software/Viventis'):
+    sys.path.insert(0, "/Users/helsens/Software/Viventis/PyMCS/v2.0.0.0")
+
+
 import pymcs
 
 microscope = pymcs.Microscope()
-microscope.connect()
+try: 
+    microscope.connect()
+except Exception:
+    print('could not connect, proceed?')
 time_lapse_controller  = pymcs.TimeLapseController(microscope)
 acquisition_controller = pymcs.AcquisitionController(microscope, "ACQ")
 
 camera    = pymcs.Camera(microscope, "CAM")
 stage_xyz = pymcs.StageXYZ(microscope, "STAGE")
+
 
 AppFont = 'Helvetica 12'
 TabFont = 'Helvetica 14'
@@ -29,11 +47,11 @@ sg.theme('DarkTeal12')
 point_count    = 10
 pulse_count    = 10
 position_name  = "Ablation"
-point_distance = 1
+point_distance = 0.7
 cut_direction  = "X"
-
-cut_type = "Line"
-circle_diam = 10
+laser_diameter = 1.
+cut_type       = "Line"
+circle_diam    = 10
 
 camera_view         = 1
 camera_channel      = 1
@@ -52,6 +70,80 @@ time_lapse  = []
 metadata    = []
 time_stamps = []
 
+#image
+fig_size = 10
+fig1 = matplotlib.figure.Figure(figsize=(fig_size,fig_size))
+fig1.add_subplot(111).plot([],[])
+
+#_______________________________________________
+def draw_figure(canvas, figure):
+    figure_canvas_agg = FigureCanvasTkAgg(figure, canvas)
+    print('figure_canvas_agg ',figure_canvas_agg)
+    print('figure            ',figure)
+    print('canvas            ',canvas)
+    figure_canvas_agg.draw()
+    figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
+    return figure_canvas_agg
+
+#_______________________________________________
+def update_figure(x, y):
+    print('update fig')
+    axis1 = fig1.axes
+    axis1[0].cla()
+    axis1[0].set_xlim(0, 2304*0.347)
+    axis1[0].set_ylim(0, 2304*0.347)
+
+    axis1[0].grid()
+    bbox = axis1[0].get_window_extent().transformed(fig1.dpi_scale_trans.inverted())
+    axes_width_inches = bbox.width
+    axes_width_pixels = axes_width_inches * fig1.dpi
+    data_range        = axis1[0].get_xlim()[1] - axis1[0].get_xlim()[0]
+
+    pixels_per_data_unit = axes_width_pixels / data_range
+    marker_side_pixels   = laser_diameter * pixels_per_data_unit
+    marker_side_points   = marker_side_pixels * 72 / fig1.dpi
+    marker_size          = marker_side_points ** 2
+
+    axis1[0].scatter(x, y, color='red', s=marker_size, label='Laser Positions')
+    #axis1[0].scatter(400, 400, color='red', s=marker_size, label='Laser Positions')
+
+#_______________________________________________
+def ablation_pattern(radius, sigma, center=(0, 0), step_fraction=0.7):
+    """
+    Generate ablation pattern for a laser over a circular disk.
+
+    Parameters:
+        radius (float): Radius of the disk to ablate.
+        sigma (float): Laser's Gaussian beam width (standard deviation).
+        center (tuple): Center of the disk (x, y).
+        step_fraction (float): Fraction of sigma to set as step size (default: 0.7).
+
+    Returns:
+        list: List of (x, y) coordinates for laser positions.
+    """
+    cx, cy = center
+    step_size = step_fraction * sigma  # Step size based on the Gaussian profile
+    positions = []
+
+    # Define grid bounds
+    x_min, x_max = cx - radius, cx + radius
+    y_min, y_max = cy - radius, cy + radius
+
+    # Iterate over a grid
+    x = np.arange(x_min, x_max + step_size, step_size)
+    for i, xi in enumerate(x):
+        # Offset alternating rows for hexagonal packing
+        offset = (step_size / 2) if i % 2 == 1 else 0
+        y = np.arange(y_min + offset, y_max + step_size, step_size)
+        if i%2!=0:y=y[::-1]
+        for yi in y:
+            # Check if the point lies within the disk
+            if np.sqrt((xi - cx) ** 2 + (yi - cy) ** 2) <= radius:
+                positions.append((xi, yi))
+    return positions
+
+
+#_______________________________________________
 def acquisition_loop():
     global loop_running
     global do_laser
@@ -91,31 +183,38 @@ def acquisition_loop():
                 stage_xyz.move(position_name, None, None, (x, y, 0))
                 acquisition_controller.laser_ablate_uv(pulse_count)
                 print("x, y ",x," ",y)
+
         stage_xyz.move(position_name)
 
         loop_running = True
         threading.Thread(target=acquisition_loop, daemon=True).start()
 
 
-layout = [
+control_col = sg.Column([
     [sg.Text("Pulse count", font=AppFont),                                      sg.Text("Point count", font=AppFont),                                      sg.Text("Point distance", font=AppFont)],
     [sg.Input(key="PULSE_COUNT", size=(9, 1), font=AppFont, default_text='10'), sg.Input(key="POINT_COUNT", size=(9, 1), font=AppFont, default_text='10'), sg.Input(key="POINT_DISTANCE", size=(9, 1), font=AppFont, default_text='1')],
 
     [sg.HorizontalSeparator(color='red')],
     [sg.Text("Cut Type   ", font=AppFont)],
-    [sg.Combo(["Line", "Circle"], key="CUT_TYPE", size=(10, 1), default_value="Line", font=AppFont)],
-    [sg.HorizontalSeparator(color='red')],
-    [sg.Input(key="CIRCLE_DIAM", size=(5, 1), font=AppFont, default_text='10')],
+    [sg.Combo(["Line", "Circle", "Disk"], key="CUT_TYPE", size=(10, 1), default_value="Line", font=AppFont)],
 
+    [sg.HorizontalSeparator(color='red')],
+    [sg.Text("Circle/Disk diameter (um)  ", font=AppFont), sg.Text("Circle/Disk sigma   ", font=AppFont)],
+    [sg.Input(key="CIRCLE_DIAM", size=(5, 1), font=AppFont, default_text='10'), sg.Text("                     ", font=AppFont), sg.Input(key="CIRCLE_SIGMA", size=(5, 1), font=AppFont, default_text='1')],
+
+    [sg.HorizontalSeparator(color='red')],
     [sg.Text("Cut direction   ", font=AppFont), sg.Text("Position name", font=AppFont)],
     [sg.Combo(["X", "Y"], key="CUT_DIR", size=(10, 1), default_value="X", font=AppFont), sg.Input(key="POSITION_NAME", size=(18, 1), font=AppFont, default_text='Ablation')],
  
     [sg.HorizontalSeparator(color='red')],
+    [sg.Text("Laser diameter (um)   ", font=AppFont)],
+    [sg.Input(key="LASER_DIAM", size=(5, 1), font=AppFont, default_text='1')],
 
+    [sg.HorizontalSeparator(color='red')],
     [sg.Text("View", font=AppFont),                                            sg.Text("Channel", font=AppFont),                                            sg.Text("Plane", font=AppFont)],
     [sg.Input(key="CAMERA_VIEW", size=(5, 1), font=AppFont, default_text='1'), sg.Input(key="CAMERA_CHANNEL", size=(5, 1), font=AppFont, default_text='1'), sg.Input(key="CAMERA_PLANE", size=(5, 1), font=AppFont, default_text='1')],
 
-    [sg.Text("left      ", font=AppFont),                                           sg.Text("top     ", font=AppFont),                                             sg.Text("width  ", font=AppFont),                                            sg.Text("height", font=AppFont)],
+    [sg.Text("left      ", font=AppFont),                                      sg.Text("top     ", font=AppFont),                                       sg.Text("width  ", font=AppFont),                                          sg.Text("height", font=AppFont)],
     [sg.Input(key="PIXEL_LEFT", size=(5, 1), font=AppFont, default_text='-1'), sg.Input(key="PIXEL_TOP", size=(5, 1), font=AppFont, default_text='-1'), sg.Input(key="PIXEL_WIDTH", size=(5, 1), font=AppFont, default_text='-1'), sg.Input(key="PIXEL_HEIGHT", size=(5, 1), font=AppFont, default_text='-1')],
 
     [sg.HorizontalSeparator(color='red')],
@@ -126,11 +225,20 @@ layout = [
     [sg.Button("Set Parameters", font=AppFont)],
     [sg.Button("Start Acquisition", font=AppFont), sg.Button("Stop Acquisition", font=AppFont)],
     [sg.Button("Start Laser", font=AppFont)],
+    [sg.Button("Preview Disk", font=AppFont)],
+    [sg.Button("Ablate Disk", font=AppFont)],
+    [sg.Button("Set Position", font=AppFont)],
 
 ]
+)
+image_col = sg.Column([
+	[sg.Canvas(key = '-CANVAS1-')]
+	])
+layout = [[control_col,image_col]]
 
-window = sg.Window("Viventis Ablation GUI", layout, size=(400,750))
-
+window = sg.Window("Viventis Ablation GUI", layout, finalize = True, resizable=True)
+print("here")
+fig1_agg = draw_figure(window['-CANVAS1-'].TKCanvas, fig1)
 while True:
     event, values = window.read()
     #print('event  ',event)
@@ -206,7 +314,7 @@ while True:
     
         point_distance = values["POINT_DISTANCE"]
         if point_distance.isdigit():
-            point_distance = int(point_distance)
+            point_distance = float(point_distance)
         else:
             sg.popup("Please enter a valid integer for point_distance.")
 
@@ -237,7 +345,7 @@ while True:
         print('experiment_name    : ',experiment_name)
 
         cut_type = values["CUT_TYPE"]
-        circle_diam = int(values["CIRCLE_DIAM"])
+        circle_diam = float(values["CIRCLE_DIAM"])
 
         print('cut_type     ',cut_type)
         print('circle_diam  ',circle_diam)
@@ -280,6 +388,74 @@ while True:
         print(time_stamps)
         out_file.close()
 
+    if event == "Preview Disk":
+
+        laser_diameter = float(values["LASER_DIAM"])
+        disk_diam      = float(values["CIRCLE_DIAM"])
+        sigma          = float(values["CIRCLE_SIGMA"])
+        center         = (0, 0)
+        disk_radius    = disk_diam/2.
+
+        positions = ablation_pattern(disk_radius, sigma)
+
+        fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+        circle = plt.Circle(center, disk_radius, color='blue', fill=False, linestyle='--', label='Disk Boundary')
+        ax.add_artist(circle)
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.set_xlim(-disk_radius-2, disk_radius+2)
+        ax.set_ylim(-disk_radius-2, disk_radius+2)
+        ax.set_title("Laser Ablation Pattern (Animated)")
+        ax.set_xlabel("X-axis")
+        ax.set_ylabel("Y-axis")
+        ax.legend()
+        ax.grid()
+
+        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        axes_width_inches = bbox.width
+        axes_width_pixels = axes_width_inches * fig.dpi
+        data_range        = ax.get_xlim()[1] - ax.get_xlim()[0]
+
+        pixels_per_data_unit = axes_width_pixels / data_range
+        marker_side_pixels   = laser_diameter * pixels_per_data_unit
+        marker_side_points   = marker_side_pixels * 72 / fig.dpi
+        marker_size          = marker_side_points ** 2
+
+        scatter = ax.scatter([], [], color='red', s=marker_size, label='Laser Positions')
+
+        def update(frame):
+            scatter.set_offsets(np.array([(positions[i][0], positions[i][1]) for i in range(frame+1)]))
+            return scatter,
+
+        ani = animation.FuncAnimation(fig, update, frames=len(positions), interval=1, blit=True, repeat=False)
+        plt.show()
+
+
+    if event == "Ablate Disk":
+
+        position_name = values["POSITION_NAME"]
+        position = stage_xyz.position_get(position_name)
+        pos_x = position.position_x
+        pos_y = position.position_y
+        fig1_agg.get_tk_widget().forget()
+
+        laser_diameter = float(values["LASER_DIAM"])
+        disk_diam      = float(values["CIRCLE_DIAM"])
+        sigma          = float(values["CIRCLE_SIGMA"])
+        disk_radius    = disk_diam/2.
+
+        positions = ablation_pattern(disk_radius, sigma)
+        x_vals, y_vals = zip(*positions)
+
+        for i in range(len(positions)):
+            stage_xyz.move(position_name, None, None, (x_vals[i], y_vals[i], 0))
+            #acquisition_controller.laser_ablate_uv(pulse_count)
+
+        x_vals=[x+pos_x for x in x_vals]
+        y_vals=[y+pos_y for y in y_vals]
+        
+        update_figure(x_vals, x_vals)
+
+        fig1_agg = draw_figure(window['-CANVAS1-'].TKCanvas, fig1)
 
 window.close()
 
