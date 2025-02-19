@@ -227,7 +227,6 @@ control_col = sg.Column([
     [sg.Button("Start Laser", font=AppFont)],
     [sg.Button("Preview Disk", font=AppFont)],
     [sg.Button("Ablate Disk", font=AppFont)],
-    [sg.Button("Set Position", font=AppFont)],
 
 ]
 )
