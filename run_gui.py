@@ -449,11 +449,12 @@ while True:
         for i in range(len(positions)):
             stage_xyz.move(position_name, None, None, (x_vals[i], y_vals[i], 0))
             #acquisition_controller.laser_ablate_uv(pulse_count)
+        stage_xyz.move(position_name)
 
         x_vals=[x+pos_x for x in x_vals]
         y_vals=[y+pos_y for y in y_vals]
-        
-        update_figure(x_vals, x_vals)
+
+        update_figure(x_vals, y_vals)
 
         fig1_agg = draw_figure(window['-CANVAS1-'].TKCanvas, fig1)
 
