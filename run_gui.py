@@ -108,9 +108,10 @@ def update_figure(x, y, image=None):
     marker_side_points   = marker_side_pixels * 72 / fig1.dpi
     marker_size          = marker_side_points ** 2
 
-    axis1[0].scatter(x, y, color='red', s=marker_size, label='Laser Positions')
+    #axis1[0].scatter(x, y, color='red', s=marker_size, label='Laser Positions')
 
     #if image.shape!=0:
+    image=np.flip(image, 0)
     axis1[0].imshow(image, cmap='gray', origin='lower', alpha=0.5)
     #axis1[0].scatter(400, 400, color='red', s=marker_size, label='Laser Positions')
 
