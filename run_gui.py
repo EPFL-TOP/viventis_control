@@ -94,8 +94,8 @@ def update_figure(x, y, image=None):
     print('update fig')
     axis1 = fig1.axes
     axis1[0].cla()
-    axis1[0].set_xlim(0, 2304*0.347)
-    axis1[0].set_ylim(0, 2304*0.347)
+    #axis1[0].set_xlim(0, 2048*0.347)
+    #axis1[0].set_ylim(0, 2048*0.347)
 
     axis1[0].grid()
     bbox = axis1[0].get_window_extent().transformed(fig1.dpi_scale_trans.inverted())
@@ -407,7 +407,7 @@ while True:
 
         time_lapse_controller.snap()
         image = camera.image_get(camera_view, camera_channel, camera_plane)
-
+        print('----------image shape',image.shape)
 
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         circle = plt.Circle(center, disk_radius, color='blue', fill=False, linestyle='--', label='Disk Boundary')
