@@ -441,13 +441,26 @@ while True:
         ani = animation.FuncAnimation(fig, update, frames=len(positions), interval=1, blit=True, repeat=False)
         plt.show()
 
+
+
+
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         image = np.flip(image,0)
 
         ax.imshow(image, cmap='gray', origin='lower', alpha=0.5)
 
-        x_vals=[x/0.346+laser_x for x in x_vals]
-        y_vals=[y/0.346+laser_y for y in y_vals]
+        x_vals=[x/0.347+laser_x for x in x_vals]
+        y_vals=[y/0.347+laser_y for y in y_vals]
+
+        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        axes_width_inches = bbox.width
+        axes_width_pixels = axes_width_inches * fig.dpi
+        data_range        = ax.get_xlim()[1] - ax.get_xlim()[0]
+
+        pixels_per_data_unit = axes_width_pixels / data_range
+        marker_side_pixels   = laser_diameter * pixels_per_data_unit
+        marker_side_points   = marker_side_pixels * 72 / fig.dpi
+        marker_size          = marker_side_points ** 2
 
         ax.scatter(x_vals, y_vals, color='red', s=marker_size, label='Laser Positions')
         plt.show()
