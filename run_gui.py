@@ -61,6 +61,10 @@ camera_pixel_top    = -1
 camera_pixel_width  = -1
 camera_pixel_height = -1
 
+laser_x = 1004
+laser_y = 1032
+
+
 experiment_name = 'test'
 
 loop_running = False
@@ -86,7 +90,7 @@ def draw_figure(canvas, figure):
     return figure_canvas_agg
 
 #_______________________________________________
-def update_figure(x, y):
+def update_figure(x, y, image=None):
     print('update fig')
     axis1 = fig1.axes
     axis1[0].cla()
@@ -105,6 +109,9 @@ def update_figure(x, y):
     marker_size          = marker_side_points ** 2
 
     axis1[0].scatter(x, y, color='red', s=marker_size, label='Laser Positions')
+
+    if image!=None:
+        axis1[0].imshow(image, cmap='gray', origin='lower', alpha=0.5)
     #axis1[0].scatter(400, 400, color='red', s=marker_size, label='Laser Positions')
 
 #_______________________________________________
@@ -396,6 +403,11 @@ while True:
         disk_radius    = disk_diam/2.
 
         positions = ablation_pattern(disk_radius, sigma)
+        x_vals, y_vals = zip(*positions)
+
+        time_lapse_controller.snap()
+        image = camera.image_get(camera_view, camera_channel, camera_plane)
+
 
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         circle = plt.Circle(center, disk_radius, color='blue', fill=False, linestyle='--', label='Disk Boundary')
@@ -427,6 +439,11 @@ while True:
 
         ani = animation.FuncAnimation(fig, update, frames=len(positions), interval=1, blit=True, repeat=False)
         plt.show()
+
+
+        x_vals=[x+laser_x for x in x_vals]
+        y_vals=[y+laser_y for y in y_vals]
+        update_figure(x_vals, y_vals, image)
 
 
     if event == "Ablate Disk":
