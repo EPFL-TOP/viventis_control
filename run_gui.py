@@ -441,10 +441,13 @@ while True:
         ani = animation.FuncAnimation(fig, update, frames=len(positions), interval=1, blit=True, repeat=False)
         plt.show()
 
+        fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+        ax.imshow(image, cmap='gray', origin='lower', alpha=0.5)
+
 
         x_vals=[x+laser_x for x in x_vals]
         y_vals=[y+laser_y for y in y_vals]
-        update_figure(x_vals, y_vals, image)
+        #update_figure(x_vals, y_vals, image)
 
 
     if event == "Ablate Disk":
