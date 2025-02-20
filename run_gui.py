@@ -443,6 +443,7 @@ while True:
 
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         ax.imshow(image, cmap='gray', origin='lower', alpha=0.5)
+        plt.show()
 
 
         x_vals=[x+laser_x for x in x_vals]
