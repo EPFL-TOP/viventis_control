@@ -442,12 +442,16 @@ while True:
         plt.show()
 
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+        image = np.flip(image,0)
+
         ax.imshow(image, cmap='gray', origin='lower', alpha=0.5)
+
+        x_vals=[x/0.346+laser_x for x in x_vals]
+        y_vals=[y/0.346+laser_y for y in y_vals]
+
+        ax.scatter(x_vals, y_vals, color='red', s=marker_size, label='Laser Positions')
         plt.show()
 
-
-        x_vals=[x+laser_x for x in x_vals]
-        y_vals=[y+laser_y for y in y_vals]
         #update_figure(x_vals, y_vals, image)
 
 
