@@ -20,10 +20,10 @@ base_outdir = ''
 if os.path.isdir(r"C:\Viventis\PyMCS"):
 
     base_outdir = r'D:\Data\Temp'
-    sys.path.insert(0, r"C:\Viventis\PyMCS\v2.0.0.0")
+    sys.path.insert(0, r"C:\Viventis\PyMCS\v2.0.0.2")
 
 elif os.path.isdir('/Users/helsens/Software/Viventis'):
-    sys.path.insert(0, "/Users/helsens/Software/Viventis/PyMCS/v2.0.0.0")
+    sys.path.insert(0, "/Users/helsens/Software/Viventis/PyMCS/v2.0.0.2")
 
 
 import pymcs
@@ -61,8 +61,10 @@ camera_pixel_top    = -1
 camera_pixel_width  = -1
 camera_pixel_height = -1
 
-laser_x = 1004
-laser_y = 1032
+#laser_x = 1004
+#laser_y = 1032
+laser_x = 0
+laser_y = 0
 
 
 experiment_name = 'test'
@@ -148,9 +150,19 @@ def ablation_pattern(radius, sigma, center=(0, 0), step_fraction=0.7):
             # Check if the point lies within the disk
             if np.sqrt((xi - cx) ** 2 + (yi - cy) ** 2) <= radius:
                 positions.append((xi, yi))
+
     return positions
 
 
+#_______________________________________________
+def ablation_pattern_line(point_count, point_distance):
+    start_offset = -1 * (point_count - 1) * point_distance / 2.
+    positions = []
+    for i in range(point_count):
+        x=(start_offset + i * point_distance)*math.cos(float(values["LINE_ANGLE"])*math.pi/180.)
+        y=(start_offset + i * point_distance)*math.sin(float(values["LINE_ANGLE"])*math.pi/180.)
+        positions.append((x,y))
+    return positions
 #_______________________________________________
 def acquisition_loop():
     global loop_running
@@ -201,6 +213,8 @@ def acquisition_loop():
 control_col = sg.Column([
     [sg.Text("Pulse count", font=AppFont),                                      sg.Text("Point count", font=AppFont),                                      sg.Text("Point distance", font=AppFont)],
     [sg.Input(key="PULSE_COUNT", size=(9, 1), font=AppFont, default_text='10'), sg.Input(key="POINT_COUNT", size=(9, 1), font=AppFont, default_text='10'), sg.Input(key="POINT_DISTANCE", size=(9, 1), font=AppFont, default_text='1')],
+    [sg.Text("Line angle", font=AppFont)],
+    [sg.Input(key="LINE_ANGLE", size=(9, 1), font=AppFont, default_text='0')],
 
     [sg.HorizontalSeparator(color='red')],
     [sg.Text("Cut Type   ", font=AppFont)],
@@ -232,9 +246,9 @@ control_col = sg.Column([
 
     [sg.Button("Set Parameters", font=AppFont)],
     [sg.Button("Start Acquisition", font=AppFont), sg.Button("Stop Acquisition", font=AppFont)],
-    [sg.Button("Start Laser", font=AppFont)],
-    [sg.Button("Preview Disk", font=AppFont)],
-    [sg.Button("Ablate Disk", font=AppFont)],
+    #[sg.Button("Start Laser", font=AppFont)],
+    [sg.Button("Preview", font=AppFont)],
+    [sg.Button("Ablate", font=AppFont)],
 
 ]
 )
@@ -363,64 +377,82 @@ while True:
         do_laser = True
 
     if event == "Start Acquisition":
-        if not loop_running:  
-            time_lapse  = []
-            metadata    = []
-            time_stamps = []
-            loop_running = True
-            threading.Thread(target=acquisition_loop, daemon=True).start()
-        else:
-            sg.popup("The loop is already running!")
+        time_lapse_controller.start()
+        #if not loop_running:  
+        #    time_lapse  = []
+        #    metadata    = []
+        #    time_stamps = []
+        #    loop_running = True
+        #    threading.Thread(target=acquisition_loop, daemon=True).start()
+        #else:
+        #    sg.popup("The loop is already running!")
 
     if event == "Stop Acquisition":
-        loop_running = False
-        time.sleep(5)
-
-        now = datetime.now()
-        current_date = now.date()
-        #current_date = current_date.replace('-','')
-        random_number = random.randint(0, 999999)
-        random_string = f"{random_number:06}"  
+        #loop_running = False
+        time_lapse_controller.stop()
         
-        outdir = os.path.join(base_outdir,'{}_{}_{}'.format(current_date,random_string, experiment_name))
-        print('--------------',outdir)
-        os.makedirs(outdir)
+        #time.sleep(5)
+        #
+        #now = datetime.now()
+        #current_date = now.date()
+        ##current_date = current_date.replace('-','')
+        #random_number = random.randint(0, 999999)
+        #random_string = f"{random_number:06}"  
+        #
+        #outdir = os.path.join(base_outdir,'{}_{}_{}'.format(current_date,random_string, experiment_name))
+        #print('--------------',outdir)
+        #os.makedirs(outdir)
+        #
+        #images_array = np.array(time_lapse)
+        #tifffile.imwrite(os.path.join(outdir,'output.tif'), images_array)
+        #
+        #out_json = {'metadata':metadata, 'time_stamps':time_stamps}
+        #out_file = open(os.path.join(outdir,'output.json'), "w") 
+        #json.dump(out_json, out_file)
+        #print(time_stamps)
+        #out_file.close()
 
-        images_array = np.array(time_lapse)
-        tifffile.imwrite(os.path.join(outdir,'output.tif'), images_array)
-
-        out_json = {'metadata':metadata, 'time_stamps':time_stamps}
-        out_file = open(os.path.join(outdir,'output.json'), "w") 
-        json.dump(out_json, out_file)
-        print(time_stamps)
-        out_file.close()
-
-    if event == "Preview Disk":
+    if event == "Preview":
 
         laser_diameter = float(values["LASER_DIAM"])
-        disk_diam      = float(values["CIRCLE_DIAM"])
-        sigma          = float(values["CIRCLE_SIGMA"])
-        center         = (0, 0)
-        disk_radius    = disk_diam/2.
-
-        positions = ablation_pattern(disk_radius, sigma)
-        x_vals, y_vals = zip(*positions)
-
         time_lapse_controller.snap()
         image = camera.image_get(camera_view, camera_channel, camera_plane)
+        fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         print('----------image shape',image.shape)
 
-        fig, ax = plt.subplots(figsize=(fig_size, fig_size))
-        circle = plt.Circle(center, disk_radius, color='blue', fill=False, linestyle='--', label='Disk Boundary')
-        ax.add_artist(circle)
+        positions = []
+        x_vals = []
+        y_vals = []
+
+        if values["CUT_TYPE"] == "Line":
+
+            positions = ablation_pattern_line(point_count, point_distance)
+            x_vals, y_vals = zip(*positions)
+            ax.set_xlim(min(x_vals)-2, max(x_vals)+2)
+            ax.set_ylim(min(y_vals)-2, max(y_vals)+2)
+
+        if values["CUT_TYPE"] == "Disk":
+            disk_diam      = float(values["CIRCLE_DIAM"])
+            sigma          = float(values["CIRCLE_SIGMA"])
+            center         = (0, 0)
+            disk_radius    = disk_diam/2.
+
+            positions = ablation_pattern(disk_radius, sigma)
+            x_vals, y_vals = zip(*positions)
+
+            circle = plt.Circle(center, disk_radius, color='blue', fill=False, linestyle='--', label='Disk Boundary')
+            ax.add_artist(circle)
+            ax.set_xlim(-disk_radius-2, disk_radius+2)
+            ax.set_ylim(-disk_radius-2, disk_radius+2)
+
+
         ax.set_aspect('equal', adjustable='datalim')
-        ax.set_xlim(-disk_radius-2, disk_radius+2)
-        ax.set_ylim(-disk_radius-2, disk_radius+2)
         ax.set_title("Laser Ablation Pattern (Animated)")
         ax.set_xlabel("X-axis")
         ax.set_ylabel("Y-axis")
         ax.legend()
         ax.grid()
+
 
         bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         axes_width_inches = bbox.width
@@ -441,9 +473,6 @@ while True:
         ani = animation.FuncAnimation(fig, update, frames=len(positions), interval=1, blit=True, repeat=False)
         plt.show()
 
-
-
-
         fig, ax = plt.subplots(figsize=(fig_size, fig_size))
         image = np.flip(image,0)
 
@@ -451,6 +480,11 @@ while True:
 
         x_vals=[x/0.347+laser_x for x in x_vals]
         y_vals=[y/0.347+laser_y for y in y_vals]
+
+        x_vals_plot=[x/0.347+1004 for x in x_vals]
+        y_vals_plot=[y/0.347+1032 for y in y_vals]
+    
+
 
         bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
         axes_width_inches = bbox.width
@@ -462,32 +496,50 @@ while True:
         marker_side_points   = marker_side_pixels * 72 / fig.dpi
         marker_size          = marker_side_points ** 2
 
-        ax.scatter(x_vals, y_vals, color='red', s=marker_size, label='Laser Positions')
+        ax.scatter(x_vals_plot, y_vals_plot, color='red', s=marker_size, label='Laser Positions')
         plt.show()
 
-        #update_figure(x_vals, y_vals, image)
+            #update_figure(x_vals, y_vals, image)
 
 
-    if event == "Ablate Disk":
+    if event == "Ablate":
 
+        time_lapse_controller.stop()
+        time.sleep(0.5)
         position_name = values["POSITION_NAME"]
         position = stage_xyz.position_get(position_name)
         pos_x = position.position_x
         pos_y = position.position_y
         fig1_agg.get_tk_widget().forget()
 
-        laser_diameter = float(values["LASER_DIAM"])
-        disk_diam      = float(values["CIRCLE_DIAM"])
-        sigma          = float(values["CIRCLE_SIGMA"])
-        disk_radius    = disk_diam/2.
+        if values["CUT_TYPE"] == "Line":
 
-        positions = ablation_pattern(disk_radius, sigma)
-        x_vals, y_vals = zip(*positions)
+            positions = ablation_pattern_line(point_count, point_distance)
+            for i in range(len(positions)):
+                stage_xyz.move(position_name, None, None, (x_vals[i], y_vals[i], 0))
+                acquisition_controller.laser_ablate_uv(pulse_count)
+            stage_xyz.move(position_name)
+        
 
-        for i in range(len(positions)):
-            stage_xyz.move(position_name, None, None, (x_vals[i], y_vals[i], 0))
-            acquisition_controller.laser_ablate_uv(pulse_count)
-        stage_xyz.move(position_name)
+        if values["CUT_TYPE"] == "Disk":
+
+            laser_diameter = float(values["LASER_DIAM"])
+            disk_diam      = float(values["CIRCLE_DIAM"])
+            sigma          = float(values["CIRCLE_SIGMA"])
+            disk_radius    = disk_diam/2.
+
+            positions = ablation_pattern(disk_radius, sigma)
+            x_vals, y_vals = zip(*positions)
+
+            for i in range(len(positions)):
+                stage_xyz.move(position_name, None, None, (x_vals[i], y_vals[i], 0))
+                acquisition_controller.laser_ablate_uv(pulse_count)
+            stage_xyz.move(position_name)
+
+        time.sleep(0.5)
+        time_lapse_controller.start()
+
+
 
         #x_vals=[x+pos_x for x in x_vals]
         #y_vals=[y+pos_y for y in y_vals]
