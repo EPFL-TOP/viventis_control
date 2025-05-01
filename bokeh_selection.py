@@ -200,17 +200,28 @@ def make_document(doc):
     #_______________________________________________________
     def save_rectangles():
         global initial_shape
+        global arr_global
+        print('intititititititit  ', initial_shape)
         scaling = 2 ** int(dropdown_downscale.value)
         data = source.data
         out = []
+
+        print(status.text.split("Selected: "))
+        filename = status.text.split("Selected: ")[-1]
+        dirname  = pathlib.Path(filename).parent.resolve()
+        channel = os.path.basename(filename)
+        channel = channel.replace(".tif","").split("_")[-1]
+        print(dirname, '   ',channel)
+
+
+
         for i, (x, y, w, h) in enumerate(zip(data.get('x', []), data.get('y', []), data.get('width', []), data.get('height', []))):
             out.append({'x': x*scaling, 'y': initial_shape[0] - y*scaling, 'width': w*scaling, 'height': h*scaling, 'order': i+1})
-        print(status.text.split("Selected: "))
-        filename=status.text.split("Selected: ")[-1]
-        dirname=pathlib.Path(filename).parent.resolve()
-        print(dirname)
+
+
+        outdict = {'channel':channel, 'shape':arr_global.shape, 'RoIs':out}
         with open(os.path.join(dirname,"tracking_RoIs.json"), "w") as f:
-            json.dump(out, f, indent=2)
+            json.dump(outdict, f, indent=2)
         print("Saved tracking_RoIs.json")
 
     btn_save = Button(label="Save Tracking RoIs", button_type="success")
@@ -252,6 +263,7 @@ def make_document(doc):
     def fill_source_image():
             global arr_global
             global initial_shape
+            
             if arr_global.ndim == 3 :
                 initial_shape = arr_global.shape[1:]
             else :
