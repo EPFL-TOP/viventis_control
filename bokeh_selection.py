@@ -11,6 +11,7 @@ import json, os, pathlib
 import tifffile
 
 updating = False
+initial_shape = ()
 
 #_______________________________________________________
 def make_document(doc):
@@ -197,10 +198,12 @@ def make_document(doc):
 
     #_______________________________________________________
     def save_rectangles():
+        global initial_shape
+        scaling = 2 ** int(dropdown_downscale.value)
         data = source.data
         out = []
         for i, (x, y, w, h) in enumerate(zip(data.get('x', []), data.get('y', []), data.get('width', []), data.get('height', []))):
-            out.append({'x': x, 'y': y, 'width': w, 'height': h, 'order': i+1})
+            out.append({'x': x*scaling, 'y': initial_shape[0] - y*scaling, 'width': w*scaling, 'height': h*scaling, 'order': i+1})
         print(status.text.split("Selected: "))
         filename=status.text.split("Selected: ")[-1]
         dirname=pathlib.Path(filename).parent.resolve()
@@ -247,6 +250,11 @@ def make_document(doc):
     #_______________________________________________________
     def fill_source_image():
             global arr_global
+            global initial_shape
+            if arr_global.ndim == 3 :
+                initial_shape = arr_global.shape[1:]
+            else :
+                initial_shape = arr_global.shape
             arr=downscale_image(arr_global, int(dropdown_downscale.value))
             images_dict={'images':[], 'x':[], 'y':[], 'dw':[], 'dh':[]}
             img=None
