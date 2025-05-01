@@ -1,4 +1,5 @@
 import tkinter as tk
+from tornado.ioloop import IOLoop
 from tkinter import filedialog
 from bokeh.io import curdoc
 from bokeh.plotting import figure
@@ -377,14 +378,22 @@ def make_document(doc):
  
 #_______________________________________________________
 def run_server():
-    # map URL path “/” to your application
-    apps = { '/': make_document }
-    server = Server(apps, port=5006, allow_websocket_origin=["localhost:5006"])
-    server.start()
-    print("Starting Bokeh server on http://localhost:5006/")
-    # This will block here and run the Tornado IOLoop
-    server.io_loop.start()
+    io_loop = IOLoop()
+    server = Server({'/': make_document},
+                    io_loop=io_loop,
+                    allow_websocket_origin=["localhost:5006"],
+                    port=5006)
+    server.start()                  # bind sockets & routes
+    io_loop.start()                 # enter the IOLoop
+
+
+
 
 
 if __name__ == '__main__':
-    run_server()
+    #run_server()
+    #to run a detached server
+    import threading
+    thread = threading.Thread(target=run_server)
+    thread.start()
+    print("Bokeh is now serving at http://localhost:5006/")
