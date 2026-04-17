@@ -106,7 +106,7 @@ def _on_tap(event):
     w_cx.value = f"{event.x:.1f}"
     w_cy.value = f"{event.y:.1f}"
     center_source.data = dict(x=[event.x], y=[event.y])
-    _update_outline()
+    _update_outline(None, None, None)
     set_status(f"Centre set → ({event.x:.1f}, {event.y:.1f}) px", "blue")
 
 plot.on_event(Tap, _on_tap)
@@ -260,7 +260,7 @@ def _px_to_stage_um(px, py):
 
 # ── Live outline refresh ───────────────────────────────────────────────────
 
-def _update_outline(attr=None, old=None, new=None):
+def _update_outline(attr, old, new):
     """Redraws the region outline whenever any geometry widget changes."""
     cx = _f(w_cx)
     cy = _f(w_cy)
@@ -290,7 +290,7 @@ def _on_shape_change(attr, old, new):
     rect_box.visible   = (new == 1)
     region_source.data = dict(xs=[[]], ys=[[]])
     points_source.data = dict(x=[], y=[])
-    _update_outline()
+    _update_outline(None, None, None)
 
 w_shape.on_change("active", _on_shape_change)
 
