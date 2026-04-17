@@ -1,22 +1,29 @@
 """
-Viventis Ablation Dashboard — Bokeh server application
+Viventis Ablation Dashboard v2 — Region-based laser ablation
+─────────────────────────────────────────────────────────────
 Run with:  bokeh serve --show ablation_dashboard.py
+
+Workflow
+────────
+1. Snap Image          → live camera frame displayed on plot
+2. Click image         → sets region centre (crosshair marker)
+3. Choose shape        → Circle or Rectangle (with rotation)
+4. Set parameters      → radius / width-height-angle, point spacing
+5. Generate Points     → fills region, previews all ablation spots
+6. Ablate              → stops acquisition, drives stage, fires UV laser,
+                         returns to named position, restarts acquisition
 """
 
 import sys, os, time, math, threading
-from datetime import datetime, timezone
-
 import numpy as np
 
-# ──────────────────────────────────────────────────────────────────────────────
-# pymcs setup  (unchanged from original)
-# ──────────────────────────────────────────────────────────────────────────────
-base_outdir = ''
+# ── pymcs (completely unchanged) ──────────────────────────────────────────
+base_outdir = ""
 
 if os.path.isdir(r"C:\Viventis\PyMCS"):
-    base_outdir = r'D:\Data\Temp'
+    base_outdir = r"D:\Data\Temp"
     sys.path.insert(0, r"C:\Viventis\PyMCS\v2.0.0.2")
-elif os.path.isdir('/Users/helsens/Software/Viventis'):
+elif os.path.isdir("/Users/helsens/Software/Viventis"):
     sys.path.insert(0, "/Users/helsens/Software/Viventis/PyMCS/v2.0.0.2")
 
 import pymcs
@@ -25,456 +32,456 @@ microscope = pymcs.Microscope()
 try:
     microscope.connect()
 except Exception:
-    print("Could not connect to microscope — running in disconnected mode.")
+    print("Could not connect to microscope — running disconnected.")
 
 time_lapse_controller  = pymcs.TimeLapseController(microscope)
 acquisition_controller = pymcs.AcquisitionController(microscope, "ACQ")
 camera                 = pymcs.Camera(microscope, "CAM")
 stage_xyz              = pymcs.StageXYZ(microscope, "STAGE")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Bokeh imports
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Bokeh ─────────────────────────────────────────────────────────────────
 from bokeh.plotting import figure, curdoc
 from bokeh.models import (
-    TextInput, Select, Button, Div, ColumnDataSource, Spacer, Slope
+    TextInput, Button, Div, ColumnDataSource, Spacer,
+    RadioButtonGroup, HoverTool,
 )
 from bokeh.layouts import column, row
+from bokeh.events import Tap
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Application state  (mirrors original globals, collected in one dict)
-# ──────────────────────────────────────────────────────────────────────────────
-params = dict(
-    pulse_count       = 10,
-    point_count       = 10,
-    position_name     = "Ablation",
-    point_distance    = 0.7,
-    cut_direction     = "X",
-    laser_diameter    = 1.0,
-    cut_type          = "Line",
-    circle_diam       = 10.0,
-    circle_sigma      = 1.0,
-    line_angle        = 0.0,
-    camera_view       = 1,
-    camera_channel    = 1,
-    camera_plane      = 1,
-    camera_pixel_left  = -1,
-    camera_pixel_top   = -1,
-    camera_pixel_width = -1,
-    camera_pixel_height= -1,
-    laser_x           = 0,
-    laser_y           = 0,
-    experiment_name   = "test",
+# ── Constants ─────────────────────────────────────────────────────────────
+UM_PER_PX = 0.347          # µm per pixel (calibration)
+HEX_FRAC  = 0.7            # hexagonal packing fraction (same as original)
+
+# ── Mutable state ─────────────────────────────────────────────────────────
+img_hw = [2048, 2048]      # [height, width] — updated on every snap
+
+# ── Data sources ──────────────────────────────────────────────────────────
+image_source  = ColumnDataSource(
+    data=dict(image=[], x=[0], y=[0], dw=[2048], dh=[2048])
 )
+region_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # outline polygon
+points_source = ColumnDataSource(data=dict(x=[], y=[]))        # ablation dots
+center_source = ColumnDataSource(data=dict(x=[], y=[]))        # + crosshair
 
-loop_running = False
-time_lapse, metadata, time_stamps = [], [], []
-
-# Animation state (mutable containers so closures can mutate them)
-_anim_positions   = []
-_anim_frame       = [0]
-_anim_callback_id = [None]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Pattern functions  (identical to original)
-# ──────────────────────────────────────────────────────────────────────────────
-def ablation_pattern(radius, sigma, center=(0, 0), step_fraction=0.7):
-    cx, cy    = center
-    step_size = step_fraction * sigma
-    positions = []
-    x_min, x_max = cx - radius, cx + radius
-    y_min, y_max = cy - radius, cy + radius
-    x = np.arange(x_min, x_max + step_size, step_size)
-    for i, xi in enumerate(x):
-        offset = (step_size / 2) if i % 2 == 1 else 0
-        y = np.arange(y_min + offset, y_max + step_size, step_size)
-        if i % 2 != 0:
-            y = y[::-1]
-        for yi in y:
-            if np.sqrt((xi - cx) ** 2 + (yi - cy) ** 2) <= radius:
-                positions.append((xi, yi))
-    return positions
-
-
-def ablation_pattern_line(point_count, point_distance, line_angle):
-    start_offset = -1 * (point_count - 1) * point_distance / 2.0
-    positions = []
-    for i in range(point_count):
-        x = (start_offset + i * point_distance) * math.cos(line_angle * math.pi / 180.0)
-        y = (start_offset + i * point_distance) * math.sin(line_angle * math.pi / 180.0)
-        positions.append((x, y))
-    return positions
-
-
-def circle_positions(point_count, radius):
-    return [
-        (radius * math.cos(i * 2 * math.pi / point_count),
-         radius * math.sin(i * 2 * math.pi / point_count))
-        for i in range(point_count)
-    ]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Bokeh data sources
-# ──────────────────────────────────────────────────────────────────────────────
-image_source   = ColumnDataSource(data=dict(image=[], x=[0], y=[0], dw=[2048], dh=[2048]))
-scatter_source = ColumnDataSource(data=dict(x=[], y=[]))
-circle_source  = ColumnDataSource(data=dict(x=[], y=[], radius=[]))
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main plot
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Plot ──────────────────────────────────────────────────────────────────
 plot = figure(
-    width=680, height=680,
-    title="Ablation Preview",
-    tools="pan,wheel_zoom,box_zoom,reset,save",
+    width=700, height=700,
+    title="Click image to place region centre  ·  then Generate Points",
+    tools="pan,wheel_zoom,box_zoom,reset,save,tap",
     x_range=(0, 2048), y_range=(0, 2048),
-    background_fill_color="#1a1a2e",
-    border_fill_color="#12122a",
-    outline_line_color="#00d4ff",
-    outline_line_width=1,
 )
-plot.title.text_color  = "#00d4ff"
-plot.title.text_font_size = "14px"
-plot.xaxis.axis_label_text_color = "#aaaacc"
-plot.yaxis.axis_label_text_color = "#aaaacc"
-plot.xgrid.grid_line_color = "#2a2a4a"
-plot.ygrid.grid_line_color = "#2a2a4a"
+plot.toolbar.active_tap = plot.select_one("TapTool")
 
 plot.image(
-    image='image', x='x', y='y', dw='dw', dh='dh',
-    source=image_source, palette='Greys256',
+    image="image", x="x", y="y", dw="dw", dh="dh",
+    source=image_source, palette="Greys256",
+)
+plot.patches(
+    "xs", "ys", source=region_source,
+    fill_color="#1a73e8", fill_alpha=0.08,
+    line_color="#1a73e8", line_width=1.8, line_dash="dashed",
+)
+abl_renderer = plot.scatter(
+    "x", "y", source=points_source,
+    color="#e53935", size=5, alpha=0.75,
+    legend_label="Ablation points",
 )
 plot.scatter(
-    'x', 'y', source=scatter_source,
-    color="#ff4444", size=8, alpha=0.85,
-    legend_label="Laser Positions",
+    "x", "y", source=center_source,
+    color="#1a73e8", size=12, marker="cross",
+    line_width=2.5, legend_label="Centre",
 )
-plot.circle(
-    'x', 'y', radius='radius', source=circle_source,
-    fill_color=None, line_color="#00d4ff",
-    line_dash="dashed", line_width=1.5,
-    legend_label="Disk Boundary",
-)
-plot.legend.background_fill_color = "#1a1a2e"
-plot.legend.label_text_color = "#ccccff"
+plot.add_tools(HoverTool(
+    renderers=[abl_renderer],
+    tooltips=[("x", "@x{0.0} px"), ("y", "@y{0.0} px")],
+))
+plot.legend.location     = "top_right"
+plot.legend.click_policy = "hide"
+plot.title.text_font_size = "12px"
+plot.title.text_color    = "#555"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Status banner
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Tap → set centre ──────────────────────────────────────────────────────
+def _on_tap(event):
+    w_cx.value = f"{event.x:.1f}"
+    w_cy.value = f"{event.y:.1f}"
+    center_source.data = dict(x=[event.x], y=[event.y])
+    _update_outline()
+    set_status(f"Centre set → ({event.x:.1f}, {event.y:.1f}) px", "blue")
+
+plot.on_event(Tap, _on_tap)
+
+# ── Widget helpers ─────────────────────────────────────────────────────────
+def _inp(title, default, w=115):
+    return TextInput(title=title, value=str(default), width=w)
+
+def _sep(label):
+    return Div(
+        text=(
+            f'<div style="font-size:11px;font-weight:700;letter-spacing:.06em;'
+            f'color:#888;text-transform:uppercase;margin-top:12px;'
+            f'padding-bottom:3px;border-bottom:1px solid #e0e0e0;">'
+            f'{label}</div>'
+        ),
+        width=310,
+    )
+
+def _f(w):
+    try:    return float(w.value.strip())
+    except: return None
+
+def _i(w):
+    try:    return int(w.value.strip())
+    except: return None
+
+# ── Widgets ───────────────────────────────────────────────────────────────
+
+# Camera / stage
+w_cam_view  = _inp("View",    1, 70)
+w_cam_chan  = _inp("Channel", 1, 70)
+w_cam_plane = _inp("Plane",   1, 70)
+w_pos_name  = _inp("Ablation position name", "Ablation", 210)
+
+# Region shape selector
+w_shape = RadioButtonGroup(
+    labels=["● Circle", "■ Rectangle"], active=0, width=230,
+)
+
+# Centre (auto-filled by click, also manually editable)
+w_cx = _inp("Centre X (px)", 1024)
+w_cy = _inp("Centre Y (px)", 1024)
+
+# Circle-specific
+w_radius = _inp("Radius (µm)", 20)
+
+# Rectangle-specific
+w_rect_w   = _inp("Width (µm)",   40)
+w_rect_h   = _inp("Height (µm)",  20)
+w_rotation = _inp("Rotation (°)",  0)
+
+# Ablation
+w_density     = _inp("Point spacing (µm)", 1.0)
+w_pulse_count = _inp("Pulse count",        10)
+
+# Status bar
 status_div = Div(
-    text='<span style="color:#00d4ff;font-weight:600;">● Ready</span>',
-    width=660,
-    styles={"font-family": "monospace", "font-size": "13px",
-            "padding": "6px 10px", "background": "#12122a",
-            "border": "1px solid #2a2a4a", "border-radius": "4px"},
+    text="<b>Ready.</b>",
+    width=700,
+    styles={
+        "font-size": "13px", "padding": "6px 10px",
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "border-radius": "4px", "margin-top": "4px",
+    },
 )
 
-def set_status(msg, color="#00d4ff"):
-    status_div.text = f'<span style="color:{color};font-weight:600;">● {msg}</span>'
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers: validated reads
-# ──────────────────────────────────────────────────────────────────────────────
-def _int(widget, name, allow_neg=False):
-    try:
-        v = int(widget.value.strip())
-        if not allow_neg and v < 0:
-            raise ValueError
-        return v
-    except ValueError:
-        set_status(f"Invalid integer for {name}", "#ff6644")
-        return None
-
-
-def _float(widget, name):
-    try:
-        return float(widget.value.strip())
-    except ValueError:
-        set_status(f"Invalid number for {name}", "#ff6644")
-        return None
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Widget factory  (keeps layout code dry)
-# ──────────────────────────────────────────────────────────────────────────────
-_STYLE = {"font-family": "monospace", "font-size": "12px"}
-
-def _input(title, default, w=110):
-    return TextInput(title=title, value=str(default), width=w,
-                     styles=_STYLE)
-
-def _sep(label=""):
-    html = (f'<div style="border-top:1px solid #2a3a5a;margin:6px 0;'
-            f'color:#4466aa;font-size:11px;font-family:monospace;'
-            f'padding-top:4px;">{label}</div>')
-    return Div(text=html, width=320)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Widgets
-# ──────────────────────────────────────────────────────────────────────────────
-w_pulse_count    = _input("Pulse Count",    10)
-w_point_count    = _input("Point Count",    10)
-w_point_distance = _input("Point Distance", 1)
-w_line_angle     = _input("Line Angle",     0)
-
-w_cut_type = Select(
-    title="Cut Type", value="Line",
-    options=["Line", "Circle", "Disk"], width=150, styles=_STYLE,
-)
-
-w_circle_diam  = _input("Diam (µm)",  10, 95)
-w_circle_sigma = _input("Sigma",      1,  95)
-
-w_cut_dir = Select(
-    title="Cut Direction", value="X",
-    options=["X", "Y"], width=110, styles=_STYLE,
-)
-w_position_name = _input("Position Name", "Ablation", 150)
-w_laser_diam    = _input("Laser Diam (µm)", 1)
-
-w_camera_view    = _input("View",    1, 75)
-w_camera_channel = _input("Channel", 1, 75)
-w_camera_plane   = _input("Plane",   1, 75)
-
-w_pixel_left   = _input("Left",   -1, 75)
-w_pixel_top    = _input("Top",    -1, 75)
-w_pixel_width  = _input("Width",  -1, 75)
-w_pixel_height = _input("Height", -1, 75)
-
-w_exp_name = _input("Experiment Name", "test", 200)
+def set_status(msg, color="#212529"):
+    status_div.text = (
+        f'<span style="color:{color};font-weight:600;">●</span> {msg}'
+    )
 
 # Buttons
-_BTN_W = 155
-btn_set_params = Button(label="⚙  Set Parameters",    button_type="primary", width=_BTN_W)
-btn_start_acq  = Button(label="▶  Start Acquisition",  button_type="success", width=_BTN_W)
-btn_stop_acq   = Button(label="■  Stop Acquisition",   button_type="danger",  width=_BTN_W)
-btn_preview    = Button(label="👁  Preview",            button_type="default", width=_BTN_W)
-btn_ablate     = Button(label="⚡  Ablate",             button_type="warning", width=_BTN_W)
+_BW = 148
+btn_snap      = Button(label="Snap Image",          button_type="primary",  width=_BW)
+btn_gen       = Button(label="Generate Points",      button_type="default",  width=_BW)
+btn_ablate    = Button(label="⚡ Ablate",            button_type="danger",   width=_BW)
+btn_start_acq = Button(label="▶ Start Acquisition",  button_type="success",  width=_BW)
+btn_stop_acq  = Button(label="■ Stop Acquisition",   button_type="warning",  width=_BW)
+btn_clear     = Button(label="✕ Clear",              button_type="light",    width=_BW)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Callbacks
-# ──────────────────────────────────────────────────────────────────────────────
-def on_set_parameters(n_clicks=None):
-    for attr, widget, name, kw in [
-        ("camera_view",          w_camera_view,    "View",           {}),
-        ("camera_channel",       w_camera_channel, "Channel",        {}),
-        ("camera_plane",         w_camera_plane,   "Plane",          {}),
-        ("camera_pixel_left",    w_pixel_left,     "Pixel Left",     {"allow_neg": True}),
-        ("camera_pixel_top",     w_pixel_top,      "Pixel Top",      {"allow_neg": True}),
-        ("camera_pixel_width",   w_pixel_width,    "Pixel Width",    {"allow_neg": True}),
-        ("camera_pixel_height",  w_pixel_height,   "Pixel Height",   {"allow_neg": True}),
-        ("pulse_count",          w_pulse_count,    "Pulse Count",    {}),
-        ("point_count",          w_point_count,    "Point Count",    {}),
-    ]:
-        v = _int(widget, name, **kw)
-        if v is not None:
-            params[attr] = v
+# ── Geometry helpers ──────────────────────────────────────────────────────
 
-    for attr, widget, name in [
-        ("point_distance", w_point_distance, "Point Distance"),
-        ("line_angle",     w_line_angle,     "Line Angle"),
-        ("circle_diam",    w_circle_diam,    "Circle Diam"),
-        ("circle_sigma",   w_circle_sigma,   "Circle Sigma"),
-        ("laser_diameter", w_laser_diam,     "Laser Diameter"),
-    ]:
-        v = _float(widget, name)
-        if v is not None:
-            params[attr] = v
-
-    params["position_name"]  = w_position_name.value
-    params["cut_direction"]  = w_cut_dir.value
-    params["cut_type"]       = w_cut_type.value
-    params["experiment_name"] = w_exp_name.value
-
-    set_status("Parameters saved.", "#44ff88")
-    print("Parameters:", params)
+def _circle_outline(cx, cy, r_um, n=80):
+    """Outline polygon of a circle (pixel coords)."""
+    r_px = r_um / UM_PER_PX
+    a    = np.linspace(0, 2 * np.pi, n, endpoint=True)
+    return [list(cx + r_px * np.cos(a))], [list(cy + r_px * np.sin(a))]
 
 
-def on_start_acquisition(n_clicks=None):
-    time_lapse_controller.start()
-    set_status("Acquisition running…", "#44ff88")
+def _rect_outline(cx, cy, w_um, h_um, angle_deg):
+    """Outline polygon of a rotated rectangle (pixel coords)."""
+    hw, hh = (w_um / UM_PER_PX) / 2, (h_um / UM_PER_PX) / 2
+    ang    = math.radians(angle_deg)
+    ca, sa = math.cos(ang), math.sin(ang)
+    corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh), (-hw, -hh)]
+    xs = [cx + x * ca - y * sa for x, y in corners]
+    ys = [cy + x * sa + y * ca for x, y in corners]
+    return [xs], [ys]
 
 
-def on_stop_acquisition(n_clicks=None):
-    time_lapse_controller.stop()
-    set_status("Acquisition stopped.", "#ffaa44")
+def _points_circle(cx, cy, r_um, spacing_um):
+    """
+    Hexagonal-packed grid clipped to a circle.
+    Returns list of (px, py) in image pixel coordinates.
+    """
+    r_px = r_um / UM_PER_PX
+    s    = (spacing_um / UM_PER_PX) * HEX_FRAC
+    pts  = []
+    xs   = np.arange(cx - r_px, cx + r_px + s, s)
+    for i, x in enumerate(xs):
+        off = s / 2 if i % 2 else 0.0
+        ys  = np.arange(cy - r_px + off, cy + r_px + s, s)
+        if i % 2:
+            ys = ys[::-1]
+        for y in ys:
+            if (x - cx) ** 2 + (y - cy) ** 2 <= r_px ** 2:
+                pts.append((x, y))
+    return pts
 
 
-def _snap_image():
-    """Snap one frame and return as normalised float32 array."""
-    time_lapse_controller.snap()
-    pl, pt = params["camera_pixel_left"], params["camera_pixel_top"]
-    pw, ph = params["camera_pixel_width"], params["camera_pixel_height"]
-    if pl > 0 and pt > 0 and pw > 0 and ph > 0:
-        img = camera.image_get(
-            params["camera_view"], params["camera_channel"], params["camera_plane"],
-            pl, pt, pw, ph,
-        )
+def _points_rect(cx, cy, w_um, h_um, angle_deg, spacing_um):
+    """
+    Regular grid inside a rotated rectangle.
+    Returns list of (px, py) in image pixel coordinates.
+    """
+    hw  = (w_um / UM_PER_PX) / 2
+    hh  = (h_um / UM_PER_PX) / 2
+    s   = spacing_um / UM_PER_PX
+    ang = math.radians(angle_deg)
+    ca, sa = math.cos(ang), math.sin(ang)
+    pts = []
+    xs  = np.arange(-hw, hw + s, s)
+    for i, lx in enumerate(xs):
+        ys = np.arange(-hh, hh + s, s)
+        if i % 2:
+            ys = ys[::-1]
+        for ly in ys:
+            pts.append((cx + lx * ca - ly * sa,
+                        cy + lx * sa + ly * ca))
+    return pts
+
+
+def _px_to_stage_um(px, py):
+    """
+    Image pixel  →  µm offset relative to the ablation position.
+    Convention: image centre  =  stage position 'position_name'  =  (0, 0) µm.
+    """
+    h, w = img_hw
+    return (px - w / 2) * UM_PER_PX, (py - h / 2) * UM_PER_PX
+
+# ── Live outline refresh ───────────────────────────────────────────────────
+
+def _update_outline(*_args):
+    """Redraws the region outline whenever any geometry widget changes."""
+    cx = _f(w_cx)
+    cy = _f(w_cy)
+    if cx is None or cy is None:
+        return
+    shape = w_shape.active
+    if shape == 0:
+        r = _f(w_radius)
+        if r and r > 0:
+            xs, ys = _circle_outline(cx, cy, r)
+            region_source.data = dict(xs=xs, ys=ys)
     else:
-        img = camera.image_get(
-            params["camera_view"], params["camera_channel"], params["camera_plane"],
+        ww = _f(w_rect_w)
+        hh = _f(w_rect_h)
+        ro = _f(w_rotation) or 0.0
+        if ww and hh and ww > 0 and hh > 0:
+            xs, ys = _rect_outline(cx, cy, ww, hh, ro)
+            region_source.data = dict(xs=xs, ys=ys)
+
+# Wire all geometry widgets → live outline
+for _w in (w_cx, w_cy, w_radius, w_rect_w, w_rect_h, w_rotation):
+    _w.on_change("value", _update_outline)
+
+
+def _on_shape_change(attr, old, new):
+    circle_box.visible = (new == 0)
+    rect_box.visible   = (new == 1)
+    region_source.data = dict(xs=[[]], ys=[[]])
+    points_source.data = dict(x=[], y=[])
+    _update_outline()
+
+w_shape.on_change("active", _on_shape_change)
+
+# ── Button callbacks ──────────────────────────────────────────────────────
+
+def on_snap(_=None):
+    try:
+        time_lapse_controller.snap()
+        image = camera.image_get(
+            _i(w_cam_view) or 1,
+            _i(w_cam_chan) or 1,
+            _i(w_cam_plane) or 1,
         )
-    img = np.flip(img, 0).astype(float)
-    lo, hi = img.min(), img.max()
-    return (img - lo) / (hi - lo) if hi > lo else img
-
-
-def _get_positions():
-    cut = params["cut_type"]
-    if cut == "Line":
-        return ablation_pattern_line(
-            params["point_count"], params["point_distance"], params["line_angle"]
-        )
-    if cut == "Disk":
-        return ablation_pattern(params["circle_diam"] / 2.0, params["circle_sigma"])
-    if cut == "Circle":
-        return circle_positions(params["point_count"], params["circle_diam"] / 2.0)
-    return []
-
-
-def on_preview(n_clicks=None):
-    on_set_parameters()
-
-    # ── snap & display image ──────────────────────────────────────────────────
-    img = _snap_image()
-    h, w = img.shape
-    plot.x_range.start, plot.x_range.end = 0, w
-    plot.y_range.start, plot.y_range.end = 0, h
-    image_source.data = dict(image=[img], x=[0], y=[0], dw=[w], dh=[h])
-
-    # ── compute laser positions in pixel space ────────────────────────────────
-    positions = _get_positions()
-    if not positions:
-        set_status("No positions for current cut type.", "#ffaa44")
+    except Exception as exc:
+        set_status(f"Snap failed: {exc}", "red")
         return
 
-    SCALE = 1.0 / 0.347          # µm → pixels
-    lx, ly = params["laser_x"], params["laser_y"]
-    px = [p[0] * SCALE + lx + w / 2 for p in positions]
-    py = [p[1] * SCALE + ly + h / 2 for p in positions]
+    image = np.flip(image, 0).astype(np.float64)
+    lo, hi = image.min(), image.max()
+    if hi > lo:
+        image = (image - lo) / (hi - lo)
+    h, w = image.shape
+    img_hw[0], img_hw[1] = h, w
 
-    # ── disk boundary circle ──────────────────────────────────────────────────
-    if params["cut_type"] == "Disk":
-        r_px = (params["circle_diam"] / 2.0) * SCALE
-        circle_source.data = dict(x=[lx + w / 2], y=[ly + h / 2], radius=[r_px])
+    plot.x_range.start, plot.x_range.end = 0, w
+    plot.y_range.start, plot.y_range.end = 0, h
+    image_source.data = dict(image=[image], x=[0], y=[0], dw=[w], dh=[h])
+
+    region_source.data = dict(xs=[[]], ys=[[]])
+    points_source.data = dict(x=[], y=[])
+    center_source.data = dict(x=[], y=[])
+    set_status("Image snapped — click image to place region centre.", "blue")
+
+
+def on_generate(_=None):
+    cx = _f(w_cx)
+    cy = _f(w_cy)
+    spacing = _f(w_density)
+
+    if cx is None or cy is None:
+        set_status("Set a centre point by clicking the image.", "red"); return
+    if not spacing or spacing <= 0:
+        set_status("Point spacing must be > 0.", "red"); return
+
+    shape = w_shape.active
+    if shape == 0:                                        # circle
+        r = _f(w_radius)
+        if not r or r <= 0:
+            set_status("Radius must be > 0.", "red"); return
+        xs, ys = _circle_outline(cx, cy, r)
+        pts    = _points_circle(cx, cy, r, spacing)
+    else:                                                 # rectangle
+        ww = _f(w_rect_w)
+        hh = _f(w_rect_h)
+        ro = _f(w_rotation) or 0.0
+        if not ww or not hh or ww <= 0 or hh <= 0:
+            set_status("Width and height must be > 0.", "red"); return
+        xs, ys = _rect_outline(cx, cy, ww, hh, ro)
+        pts    = _points_rect(cx, cy, ww, hh, ro, spacing)
+
+    region_source.data = dict(xs=xs, ys=ys)
+    center_source.data = dict(x=[cx], y=[cy])
+
+    if pts:
+        px_v, py_v = zip(*pts)
+        points_source.data = dict(x=list(px_v), y=list(py_v))
+        set_status(
+            f"{len(pts)} ablation points generated  ·  spacing {spacing} µm  ·  "
+            f"ready to Ablate.",
+            "#2e7d32",
+        )
     else:
-        circle_source.data = dict(x=[], y=[], radius=[])
-
-    # ── animate scatter via periodic callback ─────────────────────────────────
-    _anim_positions.clear()
-    _anim_positions.extend(zip(px, py))
-    _anim_frame[0] = 0
-    scatter_source.data = dict(x=[], y=[])
-
-    if _anim_callback_id[0] is not None:
-        try:
-            curdoc().remove_periodic_callback(_anim_callback_id[0])
-        except Exception:
-            pass
-
-    def _step():
-        f = _anim_frame[0]
-        if f < len(_anim_positions):
-            scatter_source.data = dict(
-                x=[p[0] for p in _anim_positions[:f + 1]],
-                y=[p[1] for p in _anim_positions[:f + 1]],
-            )
-            _anim_frame[0] += 1
-        else:
-            try:
-                curdoc().remove_periodic_callback(_anim_callback_id[0])
-            except Exception:
-                pass
-            _anim_callback_id[0] = None
-            set_status(f"Preview complete — {len(_anim_positions)} positions.", "#44ff88")
-
-    _anim_callback_id[0] = curdoc().add_periodic_callback(_step, 40)
-    set_status("Preview loading…", "#00d4ff")
+        points_source.data = dict(x=[], y=[])
+        set_status("No points generated — region may be too small for this spacing.", "orange")
 
 
 def _ablate_thread():
-    """Run in a background thread; touch Bokeh state only via add_next_tick_callback."""
-    position_name = params["position_name"]
-    pulse_count   = params["pulse_count"]
-    positions     = _get_positions()
+    """
+    Runs in a background thread.
+    All Bokeh state updates go through add_next_tick_callback.
+    pymcs calls are identical to the original script.
+    """
+    pos_name    = w_pos_name.value.strip() or "Ablation"
+    pulse_count = _i(w_pulse_count) or 10
+    pts         = list(zip(points_source.data["x"], points_source.data["y"]))
+    total       = len(pts)
 
-    total = len(positions)
-    for i, (x, y) in enumerate(positions):
-        stage_xyz.move(position_name, None, None, (x, y, 0))
+    for i, (px, py) in enumerate(pts):
+        dx, dy = _px_to_stage_um(px, py)
+        stage_xyz.move(pos_name, None, None, (dx, dy, 0))
         acquisition_controller.laser_ablate_uv(pulse_count)
-        msg = f"Ablating… {i + 1}/{total}"
-        curdoc().add_next_tick_callback(lambda m=msg: set_status(m, "#ffaa44"))
+        pct = int(100 * (i + 1) / total)
+        msg = f"Ablating … {i + 1} / {total}  ({pct} %)"
+        curdoc().add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
 
-    stage_xyz.move(position_name)
-    curdoc().add_next_tick_callback(lambda: set_status("Ablation complete.", "#44ff88"))
+    stage_xyz.move(pos_name)           # return to named position
+
+    curdoc().add_next_tick_callback(
+        lambda: set_status("Ablation complete ✓", "#2e7d32")
+    )
     curdoc().add_next_tick_callback(lambda: time_lapse_controller.start())
 
 
-def on_ablate(n_clicks=None):
+def on_ablate(_=None):
+    if not points_source.data["x"]:
+        set_status("Generate points first before ablating.", "red"); return
     time_lapse_controller.stop()
     time.sleep(0.5)
-    on_set_parameters()
-    set_status("Starting ablation…", "#ffaa44")
+    set_status("Ablating …", "#e65100")
     threading.Thread(target=_ablate_thread, daemon=True).start()
 
 
-btn_set_params.on_click(on_set_parameters)
-btn_start_acq.on_click(on_start_acquisition)
-btn_stop_acq.on_click(on_stop_acquisition)
-btn_preview.on_click(on_preview)
-btn_ablate.on_click(on_ablate)
+def on_clear(_=None):
+    region_source.data = dict(xs=[[]], ys=[[]])
+    points_source.data = dict(x=[], y=[])
+    center_source.data = dict(x=[], y=[])
+    set_status("Cleared.", "#555")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Layout
-# ──────────────────────────────────────────────────────────────────────────────
-header = Div(
-    text=(
-        '<div style="font-family:monospace;font-size:18px;font-weight:700;'
-        'color:#00d4ff;letter-spacing:2px;padding:8px 0 4px 0;">'
-        'VIVENTIS ABLATION DASHBOARD</div>'
-    ),
-    width=700,
+
+btn_snap.on_click(on_snap)
+btn_gen.on_click(on_generate)
+btn_ablate.on_click(on_ablate)
+btn_clear.on_click(on_clear)
+btn_start_acq.on_click(
+    lambda _: (time_lapse_controller.start(),
+               set_status("Acquisition running …", "blue"))
+)
+btn_stop_acq.on_click(
+    lambda _: (time_lapse_controller.stop(),
+               set_status("Acquisition stopped.", "#555"))
 )
 
+# ── Sub-panels toggled by shape selector ──────────────────────────────────
+circle_box = column(
+    w_radius,
+    Div(
+        text='<span style="font-size:11px;color:#888;">Hexagonal packing inside circle.</span>',
+        width=220,
+    ),
+)
+rect_box = column(
+    row(w_rect_w, w_rect_h),
+    w_rotation,
+    Div(
+        text='<span style="font-size:11px;color:#888;">Regular grid inside rotated rectangle.</span>',
+        width=240,
+    ),
+    visible=False,
+)
+
+# ── Control panel ─────────────────────────────────────────────────────────
 controls = column(
-    _sep("ACQUISITION PARAMETERS"),
-    row(w_pulse_count, w_point_count, w_point_distance),
-    row(w_line_angle),
 
-    _sep("CUT TYPE"),
-    w_cut_type,
+    _sep("Camera / Stage"),
+    row(w_cam_view, w_cam_chan, w_cam_plane),
+    w_pos_name,
+    btn_snap,
 
-    _sep("CIRCLE / DISK"),
-    row(w_circle_diam, w_circle_sigma),
+    _sep("Region"),
+    Div(
+        text=(
+            '<span style="font-size:11px;color:#555;">'
+            'Snap image → click to set centre → choose shape → set parameters.</span>'
+        ),
+        width=300,
+    ),
+    w_shape,
+    row(w_cx, w_cy),
+    circle_box,
+    rect_box,
 
-    _sep("CUT GEOMETRY"),
-    row(w_cut_dir, w_position_name),
-    row(w_laser_diam),
-
-    _sep("CAMERA"),
-    row(w_camera_view, w_camera_channel, w_camera_plane),
-    row(w_pixel_left, w_pixel_top, w_pixel_width, w_pixel_height),
-
-    _sep("EXPERIMENT"),
-    w_exp_name,
-
-    Spacer(height=10),
-    _sep("ACTIONS"),
-    btn_set_params,
-    row(btn_start_acq, btn_stop_acq),
-    btn_preview,
+    _sep("Ablation"),
+    row(w_density, w_pulse_count),
+    row(btn_gen, btn_clear),
     btn_ablate,
 
-    sizing_mode="fixed", width=340,
-    styles={"background": "#12122a", "padding": "12px",
-            "border": "1px solid #2a2a4a", "border-radius": "6px"},
+    _sep("Acquisition"),
+    row(btn_start_acq, btn_stop_acq),
+
+    width=320,
 )
 
-main_layout = column(
-    header,
-    row(controls, Spacer(width=16), plot),
+# ── Root layout ───────────────────────────────────────────────────────────
+root = column(
+    Div(
+        text='<h2 style="margin:0 0 8px 0;font-size:20px;">Viventis Ablation Dashboard</h2>',
+        width=1040,
+    ),
+    row(controls, Spacer(width=12), plot),
     status_div,
-    styles={"background": "#0d0d1f", "padding": "16px"},
+    Spacer(height=8),
 )
 
-curdoc().add_root(main_layout)
+curdoc().add_root(root)
 curdoc().title = "Viventis Ablation Dashboard"
