@@ -56,8 +56,9 @@ HEX_FRAC  = 0.7            # hexagonal packing fraction (same as original)
 img_hw = [2048, 2048]      # [height, width] — updated on every snap
 
 # ── Data sources ──────────────────────────────────────────────────────────
+_blank = np.zeros((2048, 2048), dtype=np.float64)
 image_source  = ColumnDataSource(
-    data=dict(image=[], x=[0], y=[0], dw=[2048], dh=[2048])
+    data=dict(image=[_blank], x=[0], y=[0], dw=[2048], dh=[2048])
 )
 region_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # outline polygon
 points_source = ColumnDataSource(data=dict(x=[], y=[]))        # ablation dots
@@ -259,7 +260,7 @@ def _px_to_stage_um(px, py):
 
 # ── Live outline refresh ───────────────────────────────────────────────────
 
-def _update_outline(*_args):
+def _update_outline(attr=None, old=None, new=None):
     """Redraws the region outline whenever any geometry widget changes."""
     cx = _f(w_cx)
     cy = _f(w_cy)
