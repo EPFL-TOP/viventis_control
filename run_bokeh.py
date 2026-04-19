@@ -1,23 +1,25 @@
 """
-Viventis Ablation Dashboard v3 — Region-based laser ablation
-─────────────────────────────────────────────────────────────
+Viventis Ablation Dashboard v4
 Run with:  bokeh serve --show ablation_dashboard.py
 
 Shape modes
-───────────
-  ● Circle      — click centre, set radius
-  ■ Rectangle   — click centre, set width / height / rotation
-  ◆ Polygon     — click vertices on image, double-click to close
-  ✏ Freehand    — drag freely on image to draw a closed outline
+-----------
+  Circle   - click centre on image, set radius
+  Rect     - click centre on image, set width / height / rotation
+  Polygon  - click vertices, double-click to close; repeat for more regions
+  Freehand - drag to draw a closed outline; repeat for more regions
 
-After drawing / configuring, set point spacing and click Generate Points,
-then Ablate.
+Multiple regions are supported in Polygon and Freehand modes.
+Use "Delete Last Region" to remove the most recently drawn one.
+"Generate Points" fills ALL drawn regions at once.
 """
 
 import sys, os, time, math, threading
 import numpy as np
 
-# ── pymcs (completely unchanged) ──────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# pymcs  (completely unchanged)
+# ---------------------------------------------------------------------------
 base_outdir = ""
 
 if os.path.isdir(r"C:\Viventis\PyMCS"):
@@ -32,14 +34,16 @@ microscope = pymcs.Microscope()
 try:
     microscope.connect()
 except Exception:
-    print("Could not connect to microscope — running disconnected.")
+    print("Could not connect to microscope -- running disconnected.")
 
 time_lapse_controller  = pymcs.TimeLapseController(microscope)
 acquisition_controller = pymcs.AcquisitionController(microscope, "ACQ")
 camera                 = pymcs.Camera(microscope, "CAM")
 stage_xyz              = pymcs.StageXYZ(microscope, "STAGE")
 
-# ── Bokeh ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Bokeh imports
+# ---------------------------------------------------------------------------
 from bokeh.plotting import figure, curdoc
 from bokeh.models import (
     TextInput, Button, Div, ColumnDataSource, Spacer,
@@ -49,100 +53,127 @@ from bokeh.models import (
 from bokeh.layouts import column, row
 from bokeh.events import Tap
 
-# ── Constants ─────────────────────────────────────────────────────────────
-UM_PER_PX = 0.347
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+UM_PER_PX = 0.347   # micrometres per pixel
 
-# Shape indices
 SH_CIRCLE = 0
 SH_RECT   = 1
 SH_POLY   = 2
 SH_FREE   = 3
 
-# ── Mutable state ─────────────────────────────────────────────────────────
-img_hw = [2048, 2048]        # [height, width], updated on snap
+# ---------------------------------------------------------------------------
+# Shared mutable state
+# ---------------------------------------------------------------------------
+img_hw = [2048, 2048]   # updated on every snap
 
-# ── Data sources ──────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Data sources
+# ---------------------------------------------------------------------------
 _blank        = np.zeros((2048, 2048), dtype=np.float64)
-image_source  = ColumnDataSource(data=dict(image=[_blank], x=[0], y=[0], dw=[2048], dh=[2048]))
-region_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))   # circle / rect outline
+image_source  = ColumnDataSource(data=dict(image=[_blank], x=[0], y=[0],
+                                           dw=[2048], dh=[2048]))
+region_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))   # circle/rect outline
 points_source = ColumnDataSource(data=dict(x=[], y=[]))          # ablation dots
-center_source = ColumnDataSource(data=dict(x=[], y=[]))          # crosshair marker
+center_source = ColumnDataSource(data=dict(x=[], y=[]))          # crosshair
 
-# Draw-tool sources (one per tool — different glyph types)
-poly_source     = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # PolyDrawTool  → patches
-freehand_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # FreehandDrawTool → multi_line
+# Polygon draw tool - patches glyph + separate vertex scatter
+poly_source   = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))
+vertex_source = ColumnDataSource(data=dict(x=[], y=[]))
 
-# ── Plot ──────────────────────────────────────────────────────────────────
+# Freehand draw tool - multi_line glyph
+freehand_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))
+
+# ---------------------------------------------------------------------------
+# Plot
+# ---------------------------------------------------------------------------
 plot = figure(
     width=700, height=700,
-    title="Snap image → select shape mode → draw / click → Generate Points",
+    title="Snap image -> select shape -> draw / click -> Generate Points",
     tools="pan,wheel_zoom,box_zoom,reset,save,tap",
     x_range=(0, 2048), y_range=(0, 2048),
 )
 
-# ---- image ---------------------------------------------------------------
+# image
 plot.image(image="image", x="x", y="y", dw="dw", dh="dh",
            source=image_source, palette="Greys256")
 
-# ---- circle / rect outline -----------------------------------------------
+# circle / rect dashed outline
 plot.patches("xs", "ys", source=region_source,
              fill_color="#1a73e8", fill_alpha=0.08,
              line_color="#1a73e8", line_width=1.8, line_dash="dashed",
              legend_label="Region outline")
 
-# ---- polygon draw renderer (PolyDrawTool attaches here) ------------------
+# polygon fill (PolyDrawTool renderer)
 poly_renderer = plot.patches(
     "xs", "ys", source=poly_source,
-    fill_color="#ff9800", fill_alpha=0.10,
+    fill_color="#ff9800", fill_alpha=0.12,
     line_color="#ff9800", line_width=2,
-    legend_label="Polygon region",
+    legend_label="Polygon regions",
 )
 
-# ---- freehand draw renderer (FreehandDrawTool attaches here) -------------
+# polygon vertex handles (required by PolyDrawTool for editing)
+vertex_renderer = plot.scatter(
+    "x", "y", source=vertex_source,
+    size=9, color="white",
+    line_color="#ff9800", line_width=2,
+    legend_label="Vertices",
+)
+
+# freehand outlines (FreehandDrawTool renderer)
 freehand_renderer = plot.multi_line(
     "xs", "ys", source=freehand_source,
     line_color="#9c27b0", line_width=2,
-    legend_label="Freehand region",
+    legend_label="Freehand regions",
 )
 
-# ---- ablation points -----------------------------------------------------
+# ablation points
 abl_rend = plot.scatter("x", "y", source=points_source,
-                         color="#e53935", size=5, alpha=0.75,
-                         legend_label="Ablation points")
+                        color="#e53935", size=5, alpha=0.75,
+                        legend_label="Ablation points")
 
-# ---- centre crosshair ----------------------------------------------------
+# centre crosshair
 plot.scatter("x", "y", source=center_source,
-             color="#1a73e8", size=12, marker="cross",
+             color="#1a73e8", size=14, marker="cross",
              line_width=2.5, legend_label="Centre")
 
-# ---- draw tools ----------------------------------------------------------
-poly_draw_tool     = PolyDrawTool(renderers=[poly_renderer])
+# draw tools
+# PolyDrawTool: vertex_renderer enables interactive vertex editing
+# custom_icon is not set so it uses the default icon
+poly_draw_tool     = PolyDrawTool(renderers=[poly_renderer],
+                                  vertex_renderer=vertex_renderer)
 freehand_draw_tool = FreehandDrawTool(renderers=[freehand_renderer])
 plot.add_tools(poly_draw_tool, freehand_draw_tool)
 
-# keep a reference to the original TapTool so we can restore it
 tap_tool = plot.select_one("TapTool")
+pan_tool = plot.select_one("PanTool")
 
-# ---- hover ---------------------------------------------------------------
 plot.add_tools(HoverTool(renderers=[abl_rend],
-                          tooltips=[("x", "@x{0.0} px"), ("y", "@y{0.0} px")]))
+                         tooltips=[("x", "@x{0.0} px"), ("y", "@y{0.0} px")]))
 
-plot.legend.location     = "top_right"
-plot.legend.click_policy = "hide"
+plot.legend.location      = "top_right"
+plot.legend.click_policy  = "hide"
 plot.title.text_font_size = "12px"
-plot.title.text_color    = "#555"
+plot.title.text_color     = "#555"
 
-# ── Tap → set centre (only active in Circle / Rectangle modes) ────────────
+# ---------------------------------------------------------------------------
+# Tap -> set centre  (only in Circle / Rect mode)
+# ---------------------------------------------------------------------------
 def _on_tap(event):
+    if w_shape.active not in (SH_CIRCLE, SH_RECT):
+        return
     w_cx.value = f"{event.x:.1f}"
     w_cy.value = f"{event.y:.1f}"
     center_source.data = dict(x=[event.x], y=[event.y])
     _update_outline(None, None, None)
-    set_status(f"Centre → ({event.x:.1f}, {event.y:.1f}) px", "blue")
+    set_status(f"Centre -> ({event.x:.1f}, {event.y:.1f}) px", "blue")
 
 plot.on_event(Tap, _on_tap)
 
-# ── Widget helpers ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Widget helpers
+# ---------------------------------------------------------------------------
 def _inp(title, default, w=115):
     return TextInput(title=title, value=str(default), width=w)
 
@@ -165,27 +196,28 @@ def _i(w):
     try:    return int(w.value.strip())
     except: return None
 
-# ── Widgets ───────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------------
+# Widgets
+# ---------------------------------------------------------------------------
 w_cam_view  = _inp("View",    1, 70)
 w_cam_chan  = _inp("Channel", 1, 70)
 w_cam_plane = _inp("Plane",   1, 70)
 w_pos_name  = _inp("Ablation position name", "Ablation", 210)
 
 w_shape = RadioButtonGroup(
-    labels=["● Circle", "■ Rect", "◆ Polygon", "✏ Freehand"],
+    labels=["Circle", "Rect", "Polygon", "Freehand"],
     active=SH_CIRCLE, width=310,
 )
 
 w_cx = _inp("Centre X (px)", 1024)
 w_cy = _inp("Centre Y (px)", 1024)
 
-w_radius   = _inp("Radius (µm)",  20)
-w_rect_w   = _inp("Width (µm)",   40)
-w_rect_h   = _inp("Height (µm)",  20)
-w_rotation = _inp("Rotation (°)",  0)
+w_radius   = _inp("Radius (um)",  20)
+w_rect_w   = _inp("Width (um)",   40)
+w_rect_h   = _inp("Height (um)",  20)
+w_rotation = _inp("Rotation (deg)", 0)
 
-w_density     = _inp("Point spacing (µm)", 1.0)
+w_density     = _inp("Point spacing (um)", 1.0)
 w_pulse_count = _inp("Pulse count",        10)
 
 status_div = Div(
@@ -199,29 +231,47 @@ status_div = Div(
 )
 
 def set_status(msg, color="#212529"):
-    status_div.text = (
-        f'<span style="color:{color};font-weight:600;">●</span> {msg}'
-    )
+    status_div.text = f'<span style="color:{color};font-weight:600;">&#9679;</span> {msg}'
 
 _BW = 148
-btn_snap      = Button(label="Snap Image",          button_type="primary",  width=_BW)
-btn_gen       = Button(label="Generate Points",      button_type="default",  width=_BW)
-btn_ablate    = Button(label="⚡ Ablate",            button_type="danger",   width=_BW)
-btn_start_acq = Button(label="▶ Start Acquisition",  button_type="success",  width=_BW)
-btn_stop_acq  = Button(label="■ Stop Acquisition",   button_type="warning",  width=_BW)
-btn_clear     = Button(label="✕ Clear",              button_type="light",    width=_BW)
+btn_snap       = Button(label="Snap Image",           button_type="primary",  width=_BW)
+btn_gen        = Button(label="Generate Points",       button_type="default",  width=_BW)
+btn_del_last   = Button(label="Delete Last Region",    button_type="warning",  width=_BW)
+btn_ablate     = Button(label="Ablate",                button_type="danger",   width=_BW)
+btn_start_acq  = Button(label="Start Acquisition",     button_type="success",  width=_BW)
+btn_stop_acq   = Button(label="Stop Acquisition",      button_type="warning",  width=_BW)
+btn_clear      = Button(label="Clear All",             button_type="light",    width=_BW)
 
-# ── Geometry helpers ──────────────────────────────────────────────────────
+# region counter display
+region_count_div = Div(
+    text='<span style="font-size:12px;color:#555;">0 region(s) drawn</span>',
+    width=200,
+)
 
+def _update_region_count():
+    shape = w_shape.active
+    if shape == SH_POLY:
+        n = sum(1 for xs in poly_source.data["xs"] if xs)
+    elif shape == SH_FREE:
+        n = sum(1 for xs in freehand_source.data["xs"] if xs)
+    else:
+        n = 0
+    region_count_div.text = (
+        f'<span style="font-size:12px;color:#555;">{n} region(s) drawn</span>'
+    )
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
 def _circle_outline(cx, cy, r_um, n=80):
     r_px = r_um / UM_PER_PX
-    a = np.linspace(0, 2 * np.pi, n, endpoint=True)
+    a    = np.linspace(0, 2 * np.pi, n, endpoint=True)
     return [list(cx + r_px * np.cos(a))], [list(cy + r_px * np.sin(a))]
 
 
 def _rect_outline(cx, cy, w_um, h_um, angle_deg):
     hw, hh = (w_um / UM_PER_PX) / 2, (h_um / UM_PER_PX) / 2
-    ang = math.radians(angle_deg)
+    ang    = math.radians(angle_deg)
     ca, sa = math.cos(ang), math.sin(ang)
     corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh), (-hw, -hh)]
     xs = [cx + x * ca - y * sa for x, y in corners]
@@ -230,56 +280,56 @@ def _rect_outline(cx, cy, w_um, h_um, angle_deg):
 
 
 def _points_circle(cx, cy, r_um, spacing_um):
+    """Hexagonal-packed grid clipped to a circle; returns list of (px, py)."""
     r_px = r_um / UM_PER_PX
-    s = (spacing_um / UM_PER_PX) * 0.7     # hexagonal packing
-    pts = []
-    xs = np.arange(cx - r_px, cx + r_px + s, s)
-    for i, x in enumerate(xs):
+    s    = (spacing_um / UM_PER_PX) * 0.7
+    pts  = []
+    for i, x in enumerate(np.arange(cx - r_px, cx + r_px + s, s)):
         off = s / 2 if i % 2 else 0.0
-        ys = np.arange(cy - r_px + off, cy + r_px + s, s)
+        col = np.arange(cy - r_px + off, cy + r_px + s, s)
         if i % 2:
-            ys = ys[::-1]
-        for y in ys:
+            col = col[::-1]
+        for y in col:
             if (x - cx) ** 2 + (y - cy) ** 2 <= r_px ** 2:
                 pts.append((x, y))
     return pts
 
 
 def _points_rect(cx, cy, w_um, h_um, angle_deg, spacing_um):
-    hw = (w_um / UM_PER_PX) / 2
-    hh = (h_um / UM_PER_PX) / 2
-    s  = spacing_um / UM_PER_PX
+    """Regular grid inside a rotated rectangle; returns list of (px, py)."""
+    hw  = (w_um / UM_PER_PX) / 2
+    hh  = (h_um / UM_PER_PX) / 2
+    s   = spacing_um / UM_PER_PX
     ang = math.radians(angle_deg)
     ca, sa = math.cos(ang), math.sin(ang)
     pts = []
     for i, lx in enumerate(np.arange(-hw, hw + s, s)):
-        for ly in (np.arange(-hh, hh + s, s)[::-1] if i % 2 else np.arange(-hh, hh + s, s)):
+        col = np.arange(-hh, hh + s, s)
+        if i % 2:
+            col = col[::-1]
+        for ly in col:
             pts.append((cx + lx * ca - ly * sa, cy + lx * sa + ly * ca))
     return pts
 
 
 def _points_in_poly(poly_x, poly_y, spacing_um):
     """
-    Vectorised ray-casting point-in-polygon fill.
-    Works with any closed polygon given in pixel coordinates.
+    Vectorised ray-casting fill for an arbitrary closed polygon.
+    poly_x, poly_y: pixel coordinates of vertices.
     Returns list of (px, py).
     """
     poly_x = np.asarray(poly_x, dtype=float)
     poly_y = np.asarray(poly_y, dtype=float)
-
     x_min, x_max = poly_x.min(), poly_x.max()
     y_min, y_max = poly_y.min(), poly_y.max()
-
     step = spacing_um / UM_PER_PX
 
-    # candidate grid (regular, no hex offset — plenty fine for arbitrary polys)
     gx = np.arange(x_min, x_max + step, step)
     gy = np.arange(y_min, y_max + step, step)
     GX, GY = np.meshgrid(gx, gy)
     px_flat = GX.ravel()
     py_flat = GY.ravel()
 
-    # vectorised ray casting
     n      = len(poly_x)
     inside = np.zeros(len(px_flat), dtype=bool)
     j      = n - 1
@@ -295,16 +345,19 @@ def _points_in_poly(poly_x, poly_y, spacing_um):
 
 
 def _px_to_stage_um(px, py):
-    """Pixel coord → µm offset relative to ablation position (= image centre)."""
+    """Pixel -> um offset relative to ablation position (image centre = 0,0)."""
     h, w = img_hw
     return (px - w / 2) * UM_PER_PX, (py - h / 2) * UM_PER_PX
 
-# ── Live outline refresh (circle & rect only) ─────────────────────────────
-
+# ---------------------------------------------------------------------------
+# Live outline refresh  (circle & rect only)
+# ---------------------------------------------------------------------------
 def _update_outline(attr, old, new):
     shape = w_shape.active
+    if shape not in (SH_CIRCLE, SH_RECT):
+        return
     cx, cy = _f(w_cx), _f(w_cy)
-    if cx is None or cy is None or shape not in (SH_CIRCLE, SH_RECT):
+    if cx is None or cy is None:
         return
     if shape == SH_CIRCLE:
         r = _f(w_radius)
@@ -312,7 +365,9 @@ def _update_outline(attr, old, new):
             xs, ys = _circle_outline(cx, cy, r)
             region_source.data = dict(xs=xs, ys=ys)
     else:
-        ww, hh, ro = _f(w_rect_w), _f(w_rect_h), _f(w_rotation) or 0.0
+        ww = _f(w_rect_w)
+        hh = _f(w_rect_h)
+        ro = _f(w_rotation) or 0.0
         if ww and hh and ww > 0 and hh > 0:
             xs, ys = _rect_outline(cx, cy, ww, hh, ro)
             region_source.data = dict(xs=xs, ys=ys)
@@ -320,57 +375,74 @@ def _update_outline(attr, old, new):
 for _w in (w_cx, w_cy, w_radius, w_rect_w, w_rect_h, w_rotation):
     _w.on_change("value", _update_outline)
 
-# ── Shape mode switch ─────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------------
+# Shape mode switch
+# ---------------------------------------------------------------------------
 def _on_shape_change(attr, old, new):
     circle_box.visible = (new == SH_CIRCLE)
     rect_box.visible   = (new == SH_RECT)
     draw_box.visible   = (new in (SH_POLY, SH_FREE))
 
-    # clear all overlays when switching
-    region_source.data  = dict(xs=[[]], ys=[[]])
-    poly_source.data    = dict(xs=[[]], ys=[[]])
+    # clear all overlays when switching shape type
+    region_source.data   = dict(xs=[[]], ys=[[]])
+    poly_source.data     = dict(xs=[[]], ys=[[]])
+    vertex_source.data   = dict(x=[], y=[])
     freehand_source.data = dict(xs=[[]], ys=[[]])
-    points_source.data  = dict(x=[], y=[])
-    center_source.data  = dict(x=[], y=[])
+    points_source.data   = dict(x=[], y=[])
+    center_source.data   = dict(x=[], y=[])
+    _update_region_count()
 
-    # activate the right tool
     if new == SH_POLY:
         plot.toolbar.active_tap  = poly_draw_tool
-        plot.toolbar.active_drag = None           # disable pan while drawing
+        plot.toolbar.active_drag = None
         draw_hint.text = (
-            '<span style="color:#ff9800;font-weight:600;">◆ Polygon mode active</span><br>'
+            '<b style="color:#ff9800;">Polygon mode</b><br>'
             '<span style="font-size:11px;color:#555;">'
-            'Select the ◆ tool in the toolbar.<br>'
-            'Click to place vertices · double-click to close.</span>'
+            'Click to place vertices. Double-click to close a polygon.<br>'
+            'Repeat to draw additional regions.<br>'
+            'Ctrl+click a vertex to delete it.</span>'
         )
     elif new == SH_FREE:
         plot.toolbar.active_drag = freehand_draw_tool
         plot.toolbar.active_tap  = None
         draw_hint.text = (
-            '<span style="color:#9c27b0;font-weight:600;">✏ Freehand mode active</span><br>'
+            '<b style="color:#9c27b0;">Freehand mode</b><br>'
             '<span style="font-size:11px;color:#555;">'
-            'Select the ✏ tool in the toolbar.<br>'
-            'Click-drag to draw a closed outline.</span>'
+            'Click and drag to draw a closed outline.<br>'
+            'Release to finish. Repeat for more regions.</span>'
         )
     else:
         plot.toolbar.active_tap  = tap_tool
-        plot.toolbar.active_drag = plot.select_one("PanTool")
+        plot.toolbar.active_drag = pan_tool
 
     _update_outline(None, None, None)
 
 w_shape.on_change("active", _on_shape_change)
 
-# ── Button callbacks ──────────────────────────────────────────────────────
+# watch draw sources so the counter stays up to date
+def _on_poly_change(attr, old, new):
+    _update_region_count()
 
+def _on_free_change(attr, old, new):
+    _update_region_count()
+
+poly_source.on_change("data", _on_poly_change)
+freehand_source.on_change("data", _on_free_change)
+
+# ---------------------------------------------------------------------------
+# Button callbacks
+# ---------------------------------------------------------------------------
 def on_snap(_=None):
     try:
         time_lapse_controller.snap()
-        image = camera.image_get(_i(w_cam_view) or 1,
-                                 _i(w_cam_chan)  or 1,
-                                 _i(w_cam_plane) or 1)
+        image = camera.image_get(
+            _i(w_cam_view)  or 1,
+            _i(w_cam_chan)  or 1,
+            _i(w_cam_plane) or 1,
+        )
     except Exception as exc:
-        set_status(f"Snap failed: {exc}", "red"); return
+        set_status(f"Snap failed: {exc}", "red")
+        return
 
     image = np.flip(image, 0).astype(np.float64)
     lo, hi = image.min(), image.max()
@@ -384,36 +456,59 @@ def on_snap(_=None):
 
     region_source.data   = dict(xs=[[]], ys=[[]])
     poly_source.data     = dict(xs=[[]], ys=[[]])
+    vertex_source.data   = dict(x=[], y=[])
     freehand_source.data = dict(xs=[[]], ys=[[]])
     points_source.data   = dict(x=[], y=[])
     center_source.data   = dict(x=[], y=[])
-    set_status("Image snapped. Now choose a shape mode.", "blue")
+    _update_region_count()
+    set_status("Image snapped. Choose a shape mode and draw.", "blue")
 
 
-def _get_drawn_polygon():
-    """Return (poly_x, poly_y) from whichever draw source has data, or (None, None)."""
+def on_del_last(_=None):
+    """Remove the last drawn polygon or freehand stroke."""
     shape = w_shape.active
     if shape == SH_POLY:
-        for xs, ys in zip(poly_source.data["xs"], poly_source.data["ys"]):
-            if xs:
-                return list(xs), list(ys)
+        xs = list(poly_source.data["xs"])
+        ys = list(poly_source.data["ys"])
+        # find the last non-empty entry and remove it
+        for i in range(len(xs) - 1, -1, -1):
+            if xs[i]:
+                xs.pop(i)
+                ys.pop(i)
+                break
+        if not xs:
+            xs, ys = [[]], [[]]
+        poly_source.data = dict(xs=xs, ys=ys)
+        set_status("Last polygon deleted.", "#555")
+
     elif shape == SH_FREE:
-        # FreehandDrawTool appends a new row per stroke; use the last non-empty one
-        all_xs = freehand_source.data["xs"]
-        all_ys = freehand_source.data["ys"]
-        for xs, ys in zip(reversed(all_xs), reversed(all_ys)):
-            if xs:
-                return list(xs), list(ys)
-    return None, None
+        xs = list(freehand_source.data["xs"])
+        ys = list(freehand_source.data["ys"])
+        for i in range(len(xs) - 1, -1, -1):
+            if xs[i]:
+                xs.pop(i)
+                ys.pop(i)
+                break
+        if not xs:
+            xs, ys = [[]], [[]]
+        freehand_source.data = dict(xs=xs, ys=ys)
+        set_status("Last freehand region deleted.", "#555")
+
+    else:
+        set_status("Delete Last is only available in Polygon / Freehand mode.", "orange")
+
+    points_source.data = dict(x=[], y=[])
+    _update_region_count()
 
 
 def on_generate(_=None):
     spacing = _f(w_density)
     if not spacing or spacing <= 0:
-        set_status("Point spacing must be > 0.", "red"); return
+        set_status("Point spacing must be > 0.", "red")
+        return
 
     shape = w_shape.active
-    pts   = []
+    all_pts = []
 
     if shape == SH_CIRCLE:
         cx, cy = _f(w_cx), _f(w_cy)
@@ -423,7 +518,7 @@ def on_generate(_=None):
         xs, ys = _circle_outline(cx, cy, r)
         region_source.data = dict(xs=xs, ys=ys)
         center_source.data = dict(x=[cx], y=[cy])
-        pts = _points_circle(cx, cy, r, spacing)
+        all_pts = _points_circle(cx, cy, r, spacing)
 
     elif shape == SH_RECT:
         cx, cy = _f(w_cx), _f(w_cy)
@@ -434,24 +529,36 @@ def on_generate(_=None):
         xs, ys = _rect_outline(cx, cy, ww, hh, ro)
         region_source.data = dict(xs=xs, ys=ys)
         center_source.data = dict(x=[cx], y=[cy])
-        pts = _points_rect(cx, cy, ww, hh, ro, spacing)
+        all_pts = _points_rect(cx, cy, ww, hh, ro, spacing)
 
-    elif shape in (SH_POLY, SH_FREE):
-        poly_x, poly_y = _get_drawn_polygon()
-        if poly_x is None:
-            set_status("Draw a region on the image first.", "red"); return
-        pts = _points_in_poly(poly_x, poly_y, spacing)
+    elif shape == SH_POLY:
+        regions = [(xs, ys) for xs, ys in
+                   zip(poly_source.data["xs"], poly_source.data["ys"]) if xs]
+        if not regions:
+            set_status("Draw at least one polygon first.", "red"); return
+        for xs, ys in regions:
+            all_pts.extend(_points_in_poly(xs, ys, spacing))
 
-    if pts:
-        px_v, py_v = zip(*pts)
+    elif shape == SH_FREE:
+        regions = [(xs, ys) for xs, ys in
+                   zip(freehand_source.data["xs"], freehand_source.data["ys"]) if xs]
+        if not regions:
+            set_status("Draw at least one freehand region first.", "red"); return
+        for xs, ys in regions:
+            all_pts.extend(_points_in_poly(xs, ys, spacing))
+
+    if all_pts:
+        px_v, py_v = zip(*all_pts)
         points_source.data = dict(x=list(px_v), y=list(py_v))
+        n_reg = len(regions) if shape in (SH_POLY, SH_FREE) else 1
         set_status(
-            f"{len(pts)} ablation points  ·  spacing {spacing} µm  ·  ready to Ablate.",
+            f"{len(all_pts)} ablation points across {n_reg} region(s)  "
+            f"·  spacing {spacing} um  ·  ready to Ablate.",
             "#2e7d32",
         )
     else:
         points_source.data = dict(x=[], y=[])
-        set_status("No points generated — region too small for this spacing.", "orange")
+        set_status("No points generated -- regions may be too small for this spacing.", "orange")
 
 
 def _ablate_thread():
@@ -465,13 +572,11 @@ def _ablate_thread():
         stage_xyz.move(pos_name, None, None, (dx, dy, 0))
         acquisition_controller.laser_ablate_uv(pulse_count)
         pct = int(100 * (i + 1) / total)
-        msg = f"Ablating … {i + 1} / {total}  ({pct} %)"
+        msg = f"Ablating ... {i + 1} / {total}  ({pct}%)"
         curdoc().add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
 
     stage_xyz.move(pos_name)
-    curdoc().add_next_tick_callback(
-        lambda: set_status("Ablation complete ✓", "#2e7d32")
-    )
+    curdoc().add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
     curdoc().add_next_tick_callback(lambda: time_lapse_controller.start())
 
 
@@ -480,39 +585,43 @@ def on_ablate(_=None):
         set_status("Generate points first.", "red"); return
     time_lapse_controller.stop()
     time.sleep(0.5)
-    set_status("Ablating …", "#e65100")
+    set_status("Ablating ...", "#e65100")
     threading.Thread(target=_ablate_thread, daemon=True).start()
 
 
 def on_clear(_=None):
     region_source.data   = dict(xs=[[]], ys=[[]])
     poly_source.data     = dict(xs=[[]], ys=[[]])
+    vertex_source.data   = dict(x=[], y=[])
     freehand_source.data = dict(xs=[[]], ys=[[]])
     points_source.data   = dict(x=[], y=[])
     center_source.data   = dict(x=[], y=[])
+    _update_region_count()
     set_status("Cleared.", "#555")
 
 
 btn_snap.on_click(on_snap)
 btn_gen.on_click(on_generate)
+btn_del_last.on_click(on_del_last)
 btn_ablate.on_click(on_ablate)
 btn_clear.on_click(on_clear)
 btn_start_acq.on_click(
     lambda _: (time_lapse_controller.start(),
-               set_status("Acquisition running …", "blue"))
+               set_status("Acquisition running ...", "blue"))
 )
 btn_stop_acq.on_click(
     lambda _: (time_lapse_controller.stop(),
                set_status("Acquisition stopped.", "#555"))
 )
 
-# ── Shape sub-panels ──────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------------
+# Shape sub-panels
+# ---------------------------------------------------------------------------
 circle_box = column(
     row(w_cx, w_cy),
     w_radius,
     Div(text='<span style="font-size:11px;color:#888;">Click image to place centre.</span>',
-        width=230),
+        width=240),
 )
 
 rect_box = column(
@@ -520,28 +629,30 @@ rect_box = column(
     row(w_rect_w, w_rect_h),
     w_rotation,
     Div(text='<span style="font-size:11px;color:#888;">Click image to place centre.</span>',
-        width=230),
+        width=240),
     visible=False,
 )
 
 draw_hint = Div(
     text=(
-        '<span style="color:#ff9800;font-weight:600;">◆ Polygon mode</span><br>'
+        '<b style="color:#ff9800;">Polygon mode</b><br>'
         '<span style="font-size:11px;color:#555;">'
-        'Select the ◆ tool in the toolbar.<br>'
-        'Click vertices · double-click to close.</span>'
+        'Click to place vertices. Double-click to close.<br>'
+        'Repeat to add more regions.</span>'
     ),
-    width=290,
+    width=300,
 )
 
 draw_box = column(
     draw_hint,
-    Div(text='<span style="font-size:11px;color:#888;">Then click Generate Points.</span>',
-        width=290),
+    region_count_div,
+    row(btn_del_last, btn_clear),
     visible=False,
 )
 
-# ── Control panel ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Control panel
+# ---------------------------------------------------------------------------
 controls = column(
     _sep("Camera / Stage"),
     row(w_cam_view, w_cam_chan, w_cam_plane),
@@ -565,7 +676,9 @@ controls = column(
     width=330,
 )
 
-# ── Root layout ───────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Root layout
+# ---------------------------------------------------------------------------
 root = column(
     Div(text='<h2 style="margin:0 0 8px 0;font-size:20px;">Viventis Ablation Dashboard</h2>',
         width=1060),
