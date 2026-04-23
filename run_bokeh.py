@@ -613,7 +613,7 @@ def on_generate(_=None):
         set_status("No points generated -- region too small for this spacing.", "orange")
 
 
-def _ablate_thread():
+def _ablate_thread(doc):
     pos_name    = w_pos_name.value.strip() or "Ablation"
     pulse_count = _i(w_pulse_count) or 10
     pts         = list(zip(points_source.data["x"], points_source.data["y"]))
@@ -625,11 +625,11 @@ def _ablate_thread():
         acquisition_controller.laser_ablate_uv(pulse_count)
         pct = int(100 * (i + 1) / total)
         msg = f"Ablating ... {i + 1} / {total}  ({pct}%)"
-        curdoc().add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
+        doc.add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
 
     stage_xyz.move(pos_name)
-    curdoc().add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
-    curdoc().add_next_tick_callback(lambda: time_lapse_controller.start())
+    doc.add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
+    doc.add_next_tick_callback(lambda: time_lapse_controller.start())
 
 
 def on_ablate(_=None):
@@ -638,7 +638,8 @@ def on_ablate(_=None):
     time_lapse_controller.stop()
     time.sleep(0.5)
     set_status("Ablating ...", "#e65100")
-    threading.Thread(target=_ablate_thread, daemon=True).start()
+    doc = curdoc()
+    threading.Thread(target=_ablate_thread, args=(doc,), daemon=True).start()
 
 
 def on_clear(_=None):
