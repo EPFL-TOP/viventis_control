@@ -9,16 +9,19 @@ Shape modes
   Polygon  - click vertices manually; "Close Polygon" to finalise;
              repeat for more regions; "Delete Last" to undo
   Freehand - drag to draw closed outline; repeat for more regions
+  Line     - click to place vertices along an open polyline;
+             "Finish Line" to commit; repeat for more lines;
+             ablates along the line at point spacing
 
-Multiple regions are supported in Polygon and Freehand modes.
-"Generate Points" fills ALL drawn regions simultaneously.
+Multiple regions/lines are supported in Polygon, Freehand, and Line modes.
+"Generate Points" fills ALL drawn regions / lines simultaneously.
 """
 
 import sys, os, time, math, threading
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# pymcs  (completely unchanged)
+# pymcs
 # ---------------------------------------------------------------------------
 base_outdir = ""
 
@@ -61,6 +64,7 @@ SH_CIRCLE = 0
 SH_RECT   = 1
 SH_POLY   = 2
 SH_FREE   = 3
+SH_LINE   = 4
 
 # ---------------------------------------------------------------------------
 # Shared mutable state
@@ -69,9 +73,13 @@ img_hw = [2048, 2048]
 
 # In-progress polygon vertices (list of (x, y) pixel coords)
 _current_poly_verts = []
-
 # All closed polygons: list of (xs_list, ys_list)
 _closed_polys = []
+
+# In-progress line vertices
+_current_line_verts = []
+# All committed lines: list of (xs_list, ys_list)
+_committed_lines = []
 
 # ---------------------------------------------------------------------------
 # Data sources
@@ -90,6 +98,11 @@ poly_vertex_source  = ColumnDataSource(data=dict(x=[], y=[]))         # vertex d
 
 # Freehand source
 freehand_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))
+
+# Line drawing sources
+line_source        = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # committed lines
+line_open_source   = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # in-progress
+line_vertex_source = ColumnDataSource(data=dict(x=[], y=[]))        # vertex dots
 
 # ---------------------------------------------------------------------------
 # Plot
@@ -135,6 +148,21 @@ freehand_renderer = plot.multi_line(
 )
 freehand_draw_tool = FreehandDrawTool(renderers=[freehand_renderer])
 plot.add_tools(freehand_draw_tool)
+
+# committed lines
+plot.multi_line("xs", "ys", source=line_source,
+                line_color="#00897b", line_width=2,
+                legend_label="Lines")
+
+# in-progress line
+plot.multi_line("xs", "ys", source=line_open_source,
+                line_color="#00897b", line_width=1.5,
+                line_dash="dotted", legend_label="Line in progress")
+
+# vertex dots for in-progress line
+plot.scatter("x", "y", source=line_vertex_source,
+             size=8, color="white", line_color="#00897b",
+             line_width=2, legend_label="Line vertices")
 
 # ablation points
 abl_rend = plot.scatter("x", "y", source=points_source,
@@ -191,7 +219,7 @@ w_cam_plane = _inp("Plane",   1, 70)
 w_pos_name  = _inp("Ablation position name", "Ablation", 210)
 
 w_shape = RadioButtonGroup(
-    labels=["Circle", "Rect", "Polygon", "Freehand"],
+    labels=["Circle", "Rect", "Polygon", "Freehand", "Line"],
     active=SH_CIRCLE, width=310,
 )
 
@@ -232,8 +260,17 @@ btn_close_poly  = Button(label="Close Polygon",       button_type="success",  wi
 btn_del_last    = Button(label="Delete Last Region",  button_type="warning",  width=_BW)
 btn_del_free    = Button(label="Delete Last Region",  button_type="warning",  width=_BW)
 
+# Line-specific buttons
+btn_finish_line   = Button(label="Finish Line",       button_type="success",  width=_BW)
+btn_del_last_line = Button(label="Delete Last Line",  button_type="warning",  width=_BW)
+
 region_count_div = Div(
     text='<span style="font-size:12px;color:#555;">0 region(s) drawn</span>',
+    width=200,
+)
+
+line_count_div = Div(
+    text='<span style="font-size:12px;color:#555;">0 line(s) drawn</span>',
     width=200,
 )
 
@@ -242,7 +279,6 @@ region_count_div = Div(
 # ---------------------------------------------------------------------------
 def _refresh_poly_display():
     """Push current in-progress and closed polygon state to the plot sources."""
-    # closed polygons
     if _closed_polys:
         c_xs = [p[0] for p in _closed_polys]
         c_ys = [p[1] for p in _closed_polys]
@@ -250,7 +286,6 @@ def _refresh_poly_display():
         c_xs, c_ys = [[]], [[]]
     poly_closed_source.data = dict(xs=c_xs, ys=c_ys)
 
-    # in-progress open edge
     if len(_current_poly_verts) >= 2:
         vx = [v[0] for v in _current_poly_verts]
         vy = [v[1] for v in _current_poly_verts]
@@ -258,7 +293,6 @@ def _refresh_poly_display():
     else:
         poly_open_source.data = dict(xs=[[]], ys=[[]])
 
-    # vertex dots
     if _current_poly_verts:
         poly_vertex_source.data = dict(
             x=[v[0] for v in _current_poly_verts],
@@ -270,27 +304,67 @@ def _refresh_poly_display():
     _update_region_count()
 
 
+def _refresh_line_display():
+    """Push current in-progress and committed line state to the plot sources."""
+    if _committed_lines:
+        l_xs = [ln[0] for ln in _committed_lines]
+        l_ys = [ln[1] for ln in _committed_lines]
+    else:
+        l_xs, l_ys = [[]], [[]]
+    line_source.data = dict(xs=l_xs, ys=l_ys)
+
+    if len(_current_line_verts) >= 2:
+        vx = [v[0] for v in _current_line_verts]
+        vy = [v[1] for v in _current_line_verts]
+        line_open_source.data = dict(xs=[vx], ys=[vy])
+    else:
+        line_open_source.data = dict(xs=[[]], ys=[[]])
+
+    if _current_line_verts:
+        line_vertex_source.data = dict(
+            x=[v[0] for v in _current_line_verts],
+            y=[v[1] for v in _current_line_verts],
+        )
+    else:
+        line_vertex_source.data = dict(x=[], y=[])
+
+    _update_region_count()
+
+
 def _update_region_count():
     shape = w_shape.active
     if shape == SH_POLY:
         n = len(_closed_polys)
         extra = " (+ 1 open)" if _current_poly_verts else ""
+        region_count_div.text = (
+            f'<span style="font-size:12px;color:#555;">'
+            f'{n} region(s) drawn{extra}</span>'
+        )
     elif shape == SH_FREE:
         n = sum(1 for xs in freehand_source.data["xs"] if xs)
-        extra = ""
-    else:
-        n = 0
-        extra = ""
-    region_count_div.text = (
-        f'<span style="font-size:12px;color:#555;">'
-        f'{n} region(s) drawn{extra}</span>'
-    )
+        region_count_div.text = (
+            f'<span style="font-size:12px;color:#555;">'
+            f'{n} region(s) drawn</span>'
+        )
+    elif shape == SH_LINE:
+        n = len(_committed_lines)
+        extra = " (+ 1 open)" if _current_line_verts else ""
+        line_count_div.text = (
+            f'<span style="font-size:12px;color:#555;">'
+            f'{n} line(s) drawn{extra}</span>'
+        )
 
 
 def _clear_poly_state():
     _current_poly_verts.clear()
     _closed_polys.clear()
     _refresh_poly_display()
+
+
+def _clear_line_state():
+    _current_line_verts.clear()
+    _committed_lines.clear()
+    _refresh_line_display()
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +395,16 @@ def _on_tap(event):
             f"Vertex {n} placed at ({event.x:.1f}, {event.y:.1f})  "
             f"-- click to add more, or press 'Close Polygon'.",
             "#ff9800",
+        )
+
+    elif shape == SH_LINE:
+        _current_line_verts.append((event.x, event.y))
+        _refresh_line_display()
+        n = len(_current_line_verts)
+        set_status(
+            f"Point {n} placed at ({event.x:.1f}, {event.y:.1f})  "
+            f"-- click to add more, or press 'Finish Line'.",
+            "#00897b",
         )
 
     # SH_FREE: tap events are ignored; FreehandDrawTool handles drags
@@ -361,12 +445,14 @@ def _on_shape_change(attr, old, new):
     rect_box.visible   = (new == SH_RECT)
     poly_box.visible   = (new == SH_POLY)
     free_box.visible   = (new == SH_FREE)
+    line_box.visible   = (new == SH_LINE)
 
     # clear everything when switching
     region_source.data = dict(xs=[[]], ys=[[]])
     points_source.data = dict(x=[], y=[])
     center_source.data = dict(x=[], y=[])
     _clear_poly_state()
+    _clear_line_state()
     freehand_source.data = dict(xs=[[]], ys=[[]])
     _update_region_count()
 
@@ -462,9 +548,28 @@ def _points_in_poly(poly_x, poly_y, spacing_um):
     return list(zip(px_flat[inside].tolist(), py_flat[inside].tolist()))
 
 
+def _points_on_line(xs, ys, spacing_um):
+    """Sample points at equal arc-length spacing along an open polyline."""
+    step = spacing_um / UM_PER_PX
+    pts = [(xs[0], ys[0])]
+    leftover = 0.0
+    for i in range(1, len(xs)):
+        dx, dy = xs[i] - xs[i - 1], ys[i] - ys[i - 1]
+        seg = math.hypot(dx, dy)
+        if seg == 0:
+            continue
+        d = step - leftover
+        while d <= seg:
+            t = d / seg
+            pts.append((xs[i - 1] + t * dx, ys[i - 1] + t * dy))
+            d += step
+        leftover = seg - (d - step)
+    return pts
+
+
 def _px_to_stage_um(px, py):
     h, w = img_hw
-    return (w / 2 - px)  * UM_PER_PX, (h / 2 - py) * UM_PER_PX
+    return (w / 2 - px) * UM_PER_PX, (h / 2 - py) * UM_PER_PX
 
 # ---------------------------------------------------------------------------
 # Button callbacks
@@ -496,6 +601,7 @@ def on_snap(_=None):
     points_source.data   = dict(x=[], y=[])
     center_source.data   = dict(x=[], y=[])
     _clear_poly_state()
+    _clear_line_state()
     _update_region_count()
     set_status("Image snapped. Choose a shape mode and draw.", "blue")
 
@@ -548,14 +654,47 @@ def on_del_last_free(_=None):
     set_status(f"Last stroke deleted. {n} region(s) remain.", "#555")
 
 
+def on_finish_line(_=None):
+    """Commit the in-progress line and start a fresh one."""
+    if len(_current_line_verts) < 2:
+        set_status("Need at least 2 points to define a line.", "orange")
+        return
+    xs = [v[0] for v in _current_line_verts]
+    ys = [v[1] for v in _current_line_verts]
+    _committed_lines.append((xs, ys))
+    _current_line_verts.clear()
+    _refresh_line_display()
+    set_status(
+        f"Line committed ({len(xs)} points). "
+        f"{len(_committed_lines)} line(s) total. "
+        f"Click to start another, or Generate Points.",
+        "#00897b",
+    )
+
+
+def on_del_last_line(_=None):
+    """Delete the most recently committed line, or clear the in-progress one."""
+    if _current_line_verts:
+        _current_line_verts.clear()
+        _refresh_line_display()
+        set_status("In-progress line cleared.", "#555")
+    elif _committed_lines:
+        _committed_lines.pop()
+        _refresh_line_display()
+        points_source.data = dict(x=[], y=[])
+        set_status(f"Last line deleted. {len(_committed_lines)} line(s) remain.", "#555")
+    else:
+        set_status("Nothing to delete.", "orange")
+
+
 def on_generate(_=None):
     spacing = _f(w_density)
     if not spacing or spacing <= 0:
         set_status("Point spacing must be > 0.", "red")
         return
 
-    shape    = w_shape.active
-    all_pts  = []
+    shape     = w_shape.active
+    all_pts   = []
     n_regions = 0
 
     if shape == SH_CIRCLE:
@@ -600,17 +739,30 @@ def on_generate(_=None):
             all_pts.extend(_points_in_poly(xs, ys, spacing))
         n_regions = len(regions)
 
+    elif shape == SH_LINE:
+        # include any in-progress line that already has >= 2 points
+        lines = list(_committed_lines)
+        if len(_current_line_verts) >= 2:
+            lines.append(([v[0] for v in _current_line_verts],
+                          [v[1] for v in _current_line_verts]))
+        if not lines:
+            set_status("Draw at least one line first.", "red"); return
+        for xs, ys in lines:
+            all_pts.extend(_points_on_line(xs, ys, spacing))
+        n_regions = len(lines)
+
     if all_pts:
         px_v, py_v = zip(*all_pts)
         points_source.data = dict(x=list(px_v), y=list(py_v))
+        label = "line(s)" if shape == SH_LINE else "region(s)"
         set_status(
-            f"{len(all_pts)} ablation points across {n_regions} region(s)  "
+            f"{len(all_pts)} ablation points across {n_regions} {label}  "
             f"·  spacing {spacing} um  ·  ready to Ablate.",
             "#2e7d32",
         )
     else:
         points_source.data = dict(x=[], y=[])
-        set_status("No points generated -- region too small for this spacing.", "orange")
+        set_status("No points generated -- region/line too small for this spacing.", "orange")
 
 
 def _ablate_thread(doc):
@@ -619,25 +771,29 @@ def _ablate_thread(doc):
     pts         = list(zip(points_source.data["x"], points_source.data["y"]))
     total       = len(pts)
 
-    for i, (px, py) in enumerate(pts):
-        dx, dy = _px_to_stage_um(px, py)
-        print(f"Ablating point {i + 1} / {total} at ({px:.1f}, {py:.1f})")
-        stage_xyz.move(pos_name, None, None, (dx, dy, 0))
-        acquisition_controller.laser_ablate_uv(pulse_count)
-        pct = int(100 * (i + 1) / total)
-        msg = f"Ablating ... {i + 1} / {total}  ({pct}%)"
-        doc.add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
+    # wait off the IO thread so acquisition has time to fully stop
+    time.sleep(0.5)
 
-    stage_xyz.move(pos_name)
-    doc.add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
-    doc.add_next_tick_callback(lambda: time_lapse_controller.start())
+    try:
+        for i, (px, py) in enumerate(pts):
+            dx, dy = _px_to_stage_um(px, py)
+            print(f"Ablating point {i + 1} / {total} at ({px:.1f}, {py:.1f})")
+            stage_xyz.move(pos_name, None, None, (dx, dy, 0))
+            acquisition_controller.laser_ablate_uv(pulse_count)
+            pct = int(100 * (i + 1) / total)
+            msg = f"Ablating ... {i + 1} / {total}  ({pct}%)"
+            doc.add_next_tick_callback(lambda m=msg: set_status(m, "#e65100"))
+    finally:
+        # always return to base position and restart acquisition
+        stage_xyz.move(pos_name)
+        doc.add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
+        doc.add_next_tick_callback(lambda: time_lapse_controller.start())
 
 
 def on_ablate(_=None):
     if not points_source.data["x"]:
         set_status("Generate points first.", "red"); return
     time_lapse_controller.stop()
-    time.sleep(0.5)
     set_status("Ablating ...", "#e65100")
     doc = curdoc()
     threading.Thread(target=_ablate_thread, args=(doc,), daemon=True).start()
@@ -649,6 +805,7 @@ def on_clear(_=None):
     points_source.data   = dict(x=[], y=[])
     center_source.data   = dict(x=[], y=[])
     _clear_poly_state()
+    _clear_line_state()
     _update_region_count()
     set_status("Cleared.", "#555")
 
@@ -657,6 +814,8 @@ btn_snap.on_click(on_snap)
 btn_close_poly.on_click(on_close_polygon)
 btn_del_last.on_click(on_del_last_poly)
 btn_del_free.on_click(on_del_last_free)
+btn_finish_line.on_click(on_finish_line)
+btn_del_last_line.on_click(on_del_last_line)
 btn_gen.on_click(on_generate)
 btn_ablate.on_click(on_ablate)
 btn_clear.on_click(on_clear)
@@ -713,6 +872,19 @@ free_box = column(
     visible=False,
 )
 
+line_box = column(
+    Div(text=(
+        '<b style="color:#00897b;">Line mode</b><br>'
+        '<span style="font-size:11px;color:#555;">'
+        'Click on the image to place points along a line.<br>'
+        'Press <b>Finish Line</b> to commit.<br>'
+        'Repeat to add more lines.</span>'
+    ), width=300),
+    line_count_div,
+    row(btn_finish_line, btn_del_last_line),
+    visible=False,
+)
+
 # ---------------------------------------------------------------------------
 # Control panel
 # ---------------------------------------------------------------------------
@@ -728,6 +900,7 @@ controls = column(
     rect_box,
     poly_box,
     free_box,
+    line_box,
 
     _sep("Ablation"),
     row(w_density, w_pulse_count),
