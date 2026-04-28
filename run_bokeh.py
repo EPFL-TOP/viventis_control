@@ -786,7 +786,7 @@ def _ablate_thread(doc):
     finally:
         # always return to base position and restart acquisition
         stage_xyz.move(pos_name)
-        doc.add_next_tick_callback(lambda: set_status("Ablation complete!", "#2e7d32"))
+        doc.add_next_tick_callback(lambda: set_status("Ablation complete!. Restart acquisition...", "#2e7d32"))
         doc.add_next_tick_callback(lambda: time_lapse_controller.start())
 
 
