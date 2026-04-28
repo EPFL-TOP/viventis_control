@@ -464,7 +464,7 @@ def _points_in_poly(poly_x, poly_y, spacing_um):
 
 def _px_to_stage_um(px, py):
     h, w = img_hw
-    return (px - w / 2) * UM_PER_PX, (py - h / 2) * UM_PER_PX
+    return (w / 2 - px)  * UM_PER_PX, (h / 2 - py) * UM_PER_PX
 
 # ---------------------------------------------------------------------------
 # Button callbacks
@@ -621,6 +621,7 @@ def _ablate_thread(doc):
 
     for i, (px, py) in enumerate(pts):
         dx, dy = _px_to_stage_um(px, py)
+        print(f"Ablating point {i + 1} / {total} at ({px:.1f}, {py:.1f})")
         stage_xyz.move(pos_name, None, None, (dx, dy, 0))
         acquisition_controller.laser_ablate_uv(pulse_count)
         pct = int(100 * (i + 1) / total)
