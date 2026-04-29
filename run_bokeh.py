@@ -591,7 +591,7 @@ def _px_to_stage_um(px, py):
     return (w / 2 - px) * UM_PER_PX, (h / 2 - py) * UM_PER_PX
 
 
-def _update_target(attr=None, old=None, new=None):
+def _update_target():
     if not _target_visible[0]:
         return
     h, w = img_hw
@@ -638,7 +638,7 @@ def on_toggle_target(_=None):
 btn_toggle_target.on_click(on_toggle_target)
 for _tw in (w_target_spacing, w_target_line_color, w_target_line_width,
             w_target_circle_color, w_target_circle_width):
-    _tw.on_change("value", _update_target)
+    _tw.on_change("value", lambda attr, old, new: _update_target())
 
 # ---------------------------------------------------------------------------
 # Button callbacks
