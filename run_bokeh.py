@@ -591,7 +591,7 @@ def _px_to_stage_um(px, py):
     return (w / 2 - px) * UM_PER_PX, (h / 2 - py) * UM_PER_PX
 
 
-def _update_target(_=None):
+def _update_target(attr=None, old=None, new=None):
     if not _target_visible[0]:
         return
     h, w = img_hw
