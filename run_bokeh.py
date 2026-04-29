@@ -104,6 +104,11 @@ line_source        = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # committed 
 line_open_source   = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))  # in-progress
 line_vertex_source = ColumnDataSource(data=dict(x=[], y=[]))        # vertex dots
 
+# Target overlay sources
+target_cross_source   = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))
+target_circles_source = ColumnDataSource(data=dict(xs=[[]], ys=[[]]))
+_target_visible = [False]
+
 # ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
@@ -173,6 +178,12 @@ abl_rend = plot.scatter("x", "y", source=points_source,
 plot.scatter("x", "y", source=center_source,
              color="#1a73e8", size=14, marker="cross",
              line_width=2.5, legend_label="Centre")
+
+# target overlay (cross + concentric circles) — hidden until toggled
+target_cross_renderer   = plot.multi_line("xs", "ys", source=target_cross_source,
+                                          line_color="cyan", line_width=1, visible=False)
+target_circles_renderer = plot.multi_line("xs", "ys", source=target_circles_source,
+                                          line_color="cyan", line_width=1, visible=False)
 
 tap_tool = plot.select_one("TapTool")
 pan_tool = plot.select_one("PanTool")
@@ -263,6 +274,14 @@ btn_del_free    = Button(label="Delete Last Region",  button_type="warning",  wi
 # Line-specific buttons
 btn_finish_line   = Button(label="Finish Line",       button_type="success",  width=_BW)
 btn_del_last_line = Button(label="Delete Last Line",  button_type="warning",  width=_BW)
+
+# Target overlay widgets
+btn_toggle_target     = Button(label="Show Target",         button_type="default", width=_BW)
+w_target_spacing      = _inp("Circle spacing (um)", 50,  150)
+w_target_line_color   = _inp("Cross color",   "cyan", 100)
+w_target_line_width   = _inp("Cross width",        1,  60)
+w_target_circle_color = _inp("Circle color", "cyan",  100)
+w_target_circle_width = _inp("Circle width",       1,  60)
 
 region_count_div = Div(
     text='<span style="font-size:12px;color:#555;">0 region(s) drawn</span>',
@@ -571,6 +590,56 @@ def _px_to_stage_um(px, py):
     h, w = img_hw
     return (w / 2 - px) * UM_PER_PX, (h / 2 - py) * UM_PER_PX
 
+
+def _update_target(_=None):
+    if not _target_visible[0]:
+        return
+    h, w = img_hw
+    cx, cy = w / 2.0, h / 2.0
+
+    target_cross_source.data = dict(
+        xs=[[0, w], [cx, cx]],
+        ys=[[cy, cy], [0,  h]],
+    )
+
+    spacing_um = _f(w_target_spacing) or 50.0
+    spacing_px = max(spacing_um / UM_PER_PX, 1.0)
+    max_r = math.hypot(cx, cy)
+    circle_xs, circle_ys = [], []
+    r = spacing_px
+    while r <= max_r + spacing_px:
+        a = np.linspace(0, 2 * np.pi, 180, endpoint=True)
+        circle_xs.append(list(cx + r * np.cos(a)))
+        circle_ys.append(list(cy + r * np.sin(a)))
+        r += spacing_px
+    target_circles_source.data = dict(
+        xs=circle_xs or [[]], ys=circle_ys or [[]]
+    )
+
+    lc = w_target_line_color.value.strip()   or "cyan"
+    cc = w_target_circle_color.value.strip() or "cyan"
+    lw = _f(w_target_line_width)   or 1.0
+    cw = _f(w_target_circle_width) or 1.0
+    target_cross_renderer.glyph.line_color   = lc
+    target_cross_renderer.glyph.line_width   = lw
+    target_circles_renderer.glyph.line_color = cc
+    target_circles_renderer.glyph.line_width = cw
+
+
+def on_toggle_target(_=None):
+    _target_visible[0] = not _target_visible[0]
+    v = _target_visible[0]
+    target_cross_renderer.visible   = v
+    target_circles_renderer.visible = v
+    btn_toggle_target.label = "Hide Target" if v else "Show Target"
+    if v:
+        _update_target()
+
+btn_toggle_target.on_click(on_toggle_target)
+for _tw in (w_target_spacing, w_target_line_color, w_target_line_width,
+            w_target_circle_color, w_target_circle_width):
+    _tw.on_change("value", _update_target)
+
 # ---------------------------------------------------------------------------
 # Button callbacks
 # ---------------------------------------------------------------------------
@@ -603,6 +672,7 @@ def on_snap(_=None):
     _clear_poly_state()
     _clear_line_state()
     _update_region_count()
+    _update_target()
     set_status("Image snapped. Choose a shape mode and draw.", "blue")
 
 
@@ -885,6 +955,13 @@ line_box = column(
     visible=False,
 )
 
+target_box = column(
+    btn_toggle_target,
+    w_target_spacing,
+    row(w_target_line_color,   w_target_line_width),
+    row(w_target_circle_color, w_target_circle_width),
+)
+
 # ---------------------------------------------------------------------------
 # Control panel
 # ---------------------------------------------------------------------------
@@ -901,6 +978,9 @@ controls = column(
     poly_box,
     free_box,
     line_box,
+
+    _sep("Target Overlay"),
+    target_box,
 
     _sep("Ablation"),
     row(w_density, w_pulse_count),
