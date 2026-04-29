@@ -50,7 +50,7 @@ stage_xyz              = pymcs.StageXYZ(microscope, "STAGE")
 from bokeh.plotting import figure, curdoc
 from bokeh.models import (
     TextInput, Button, Div, ColumnDataSource, Spacer,
-    RadioButtonGroup, HoverTool, FreehandDrawTool,
+    RadioButtonGroup, HoverTool, FreehandDrawTool, Select,
 )
 from bokeh.layouts import column, row
 from bokeh.events import Tap
@@ -278,10 +278,11 @@ btn_del_last_line = Button(label="Delete Last Line",  button_type="warning",  wi
 # Target overlay widgets
 btn_toggle_target     = Button(label="Show Target",         button_type="default", width=_BW)
 w_target_spacing      = _inp("Circle spacing (um)", 50,  150)
-w_target_line_color   = _inp("Cross color",   "cyan", 100)
-w_target_line_width   = _inp("Cross width",        1,  60)
-w_target_circle_color = _inp("Circle color", "cyan",  100)
-w_target_circle_width = _inp("Circle width",       1,  60)
+_TARGET_COLORS = ["cyan", "white", "yellow", "lime", "red", "magenta", "orange", "black"]
+w_target_line_color   = Select(title="Cross color",   value="cyan", options=_TARGET_COLORS, width=120)
+w_target_line_width   = _inp("Cross width",  1, 60)
+w_target_circle_color = Select(title="Circle color",  value="cyan", options=_TARGET_COLORS, width=120)
+w_target_circle_width = _inp("Circle width", 1, 60)
 
 region_count_div = Div(
     text='<span style="font-size:12px;color:#555;">0 region(s) drawn</span>',
